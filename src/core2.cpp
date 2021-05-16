@@ -75,6 +75,21 @@ void loop2() {
     }
   } 
 
+  bool actualIsArmed = isArmed();
+  if (actualIsArmed && !previousIsArmed) {
+    if (isArmingAllowed()) {
+      initValues();
+      playArmed();
+    } else {
+      actualIsArmed = false;
+    }
+  } else if (!actualIsArmed && previousIsArmed) {
+    initValues();
+    playDisarmed();
+  }
+  previousIsArmed = actualIsArmed;
+
+
   flightMode = getFlightMode();
 
   int rollChannel = fixChannelDirection(getExpo(channel[0], rollExpoFactor), rollChannelReversed);
@@ -110,31 +125,25 @@ void loop2() {
   frontServo = limitServo(MID_CHANNEL - rollOutputPID.getOutput() - yawOutputPID.getOutput() + frontServoCenterOffset);
   backServo = limitServo(MID_CHANNEL + rollOutputPID.getOutput() - yawOutputPID.getOutput() + backServoCenterOffset);
   
-  bool actualIsArmed = isArmed();
-  if (actualIsArmed && !previousIsArmed) {
-    if (isArmingAllowed()) {
-      initValues();
-      playArmed();
-    } else {
-      actualIsArmed = false;
-    }
-  } else if (!actualIsArmed && previousIsArmed) {
-    initValues();
-    playDisarmed();
-  }
-  previousIsArmed = actualIsArmed;
 
   if (signal_detected && actualIsArmed) {    
-    writeEscPWM(MOTOR_FRONT_PWM_CHANNEL, frontEsc);
-    writeEscPWM(MOTOR_BACK_PWM_CHANNEL, backEsc);
-    writeServoPWM(SERVO_FRONT_PWM_CHANNEL, frontServo);
-    writeServoPWM(SERVO_BACK_PWM_CHANNEL, backServo);    
+    if (switchB.readPos() == 2) {
+      frontEsc = MIN_PULSE; 
+    }
+    if (switchD.readPos() == 2) {
+      backEsc = MIN_PULSE;
+    }
   } else {
-    writeEscPWM(MOTOR_FRONT_PWM_CHANNEL, MIN_PULSE);
-    writeEscPWM(MOTOR_BACK_PWM_CHANNEL, MIN_PULSE);    
-    writeServoPWM(SERVO_FRONT_PWM_CHANNEL, MID_CHANNEL + frontServoCenterOffset);
-    writeServoPWM(SERVO_BACK_PWM_CHANNEL, MID_CHANNEL + backServoCenterOffset);
+    frontEsc = MIN_PULSE;
+    backEsc = MIN_PULSE;    
+    frontServo = MID_CHANNEL + frontServoCenterOffset;
+    backServo = MID_CHANNEL + backServoCenterOffset;
   }
+
+  writeEscPWM(MOTOR_FRONT_PWM_CHANNEL, frontEsc);
+  writeEscPWM(MOTOR_BACK_PWM_CHANNEL, backEsc);
+  writeServoPWM(SERVO_FRONT_PWM_CHANNEL, frontServo);
+  writeServoPWM(SERVO_BACK_PWM_CHANNEL, backServo);    
 
   // check battery voltage once per second
   if ((millisTimer - batteryVoltageTimer) > 1000) {

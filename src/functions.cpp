@@ -42,7 +42,9 @@ bool mpu_6050_found = false;
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 TwoPosSwitch switchA(4);
+TwoPosSwitch switchB(6);
 ThreePosSwitch switchC(5);
+TwoPosSwitch switchD(7);
 
 FlightMode flightMode;
 

@@ -319,7 +319,9 @@ extern GYROAxis acc_pitch;
 extern GYROAxis acc_yaw;
 
 extern TwoPosSwitch switchA;
+extern TwoPosSwitch switchB;
 extern ThreePosSwitch switchC;
+extern TwoPosSwitch switchD;
 
 
 extern double LowPassFilter(const double prmAlpha, const double prmCurrentValue, const double prmPreviousValue);
