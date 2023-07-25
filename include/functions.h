@@ -15,14 +15,21 @@
 
 #define eps                     0.00001
 
-#define CHINOOK_VERSION         "1.1"
+#define CHINOOK_VERSION         "1.2"
 
-#define STACK_SIZE_CORE2        30000
+// CORE0 is used by WIFI
+#define CORE0                       0
+#define CORE1                       1
+
+#define STACK_SIZE_CORE             4096
 
 #define FORMAT_SPIFFS_IF_FAILED true
 
-#define LOOP_TIME               4000   // microseconds; 250Hz
-#define LOOP_TIME_HZ            (1000000.0/LOOP_TIME)
+#define LOOP_TIME_TASK1             40000    // microseconds; 25Hz
+#define LOOP_TIME_TASK2             10000    // microseconds; 100Hz
+#define LOOP_TIME_TASK3             4000     // microseconds; 250Hz
+#define LOOP_TIME_TASK4             10000    // microseconds; 100Hz
+
 
 #define PPM_PULSE_TRAIN_PERIOD  5000   // microsec
 #define NR_OF_RECEIVER_CHANNELS 8      //FS-IA6B
@@ -62,13 +69,20 @@
 
 #define FLIGHT_MODE_MAX_ANGLE       30
 
-#define BATTERY_NOICE_FILTER        0.92
+#define VOLTAGE_NOICE_FILTER        0.92
 
 #define SSID_BASE                   "CHINOOK_ESP32_"
 
+#define NAME_TAB_TELEMETRY          "Telemetry"
+#define NAME_TAB_SETTINGS           "Settings"
+
+#define NAME_TAB_BUTTON_TELEMETRY   "BTN_" NAME_TAB_TELEMETRY
+#define NAME_TAB_BUTTON_SETTINGS    "BTN_" NAME_TAB_SETTINGS 
 
 #define NAME_MODEL                  "Model"
 #define NAME_VERSION                "Version"
+#define NAME_WIFI_SIGNAL_STRENGTH   "WiFi Signal Strength [dB]"
+#define NAME_RESPONSE_TIME          "Response Time [ms]"
 #define NAME_CHANNEL_1              "Channel 1 (Roll)"
 #define NAME_CHANNEL_2              "Channel 2 (Pitch)"
 #define NAME_CHANNEL_3              "Channel 3 (Throttle)"
@@ -80,8 +94,12 @@
 #define NAME_SIGNAL_DETECTED        "Signal Detected"
 #define NAME_ARMED                  "Armed"
 #define NAME_FLIGHT_MODE            "Flight Mode"
-#define NAME_BATTERY                "Battery [volt]"
-#define NAME_BATTERY_PROGRESS       "Battery"
+#define NAME_VOLTAGE                "Voltage [V]"
+#define NAME_VOLTAGE_PROGRESS       "Voltage"
+#define NAME_USED_UP_LOOPTIME_PROGRESS_1 "Used up Looptime task 1 [us]"
+#define NAME_USED_UP_LOOPTIME_PROGRESS_2 "Used up Looptime task 2 [us]"
+#define NAME_USED_UP_LOOPTIME_PROGRESS_3 "Used up Looptime task 3 [us]"
+#define NAME_USED_UP_LOOPTIME_PROGRESS_4 "Used up Looptime task 4 [us]"
 #define NAME_GYRO_X                 "gyro_x"
 #define NAME_GYRO_Y                 "gyro_y"
 #define NAME_GYRO_Z                 "gyro_z"
@@ -92,7 +110,6 @@
 #define NAME_ANGLE_ROLL_ACC         "angle_roll_acc"
 #define NAME_ANGLE_PITCH_ACC        "angle_pitch_acc"
 #define NAME_ANGLE_YAW_ACC          "angle_yaw_acc"
-#define NAME_USED_UP_LOOPTIME       "Used up Looptime [us]"
 #define NAME_SETTINGS               "Settings"
 #define NAME_ROLL_EXPO              "Roll Expo"
 #define NAME_PITCH_EXPO             "Pitch Expo"
@@ -144,7 +161,11 @@
 #define NAME_FRONT_SERVO            "Front Servo"
 #define NAME_BACK_SERVO             "Back Servo"
 
-#define ID_PROGRESS_BATTERY         "progressID_bat"
+#define ID_PROGRESS_RESP_TIME       "progressID_resp_time"
+#define ID_SPAN_PROGRESS_RESP_TIME  "progressSpanID_resp_time"
+#define ID_PROGRESS_WIFI_SS         "progressID_wifi_ss"
+#define ID_SPAN_PROGRESS_WIFI_SS    "progressSpanID_wifi_ss"
+#define ID_PROGRESS_VOLTAGE         "progressID_voltage"
 #define ID_PROGRESS_CHANNEL_1       "progressID_ch1"
 #define ID_PROGRESS_CHANNEL_2       "progressID_ch2"
 #define ID_PROGRESS_CHANNEL_3       "progressID_ch3"
@@ -161,17 +182,29 @@
 #define ID_SPAN_PROGRESS_CHANNEL_6  "progressSpanID_ch6"
 #define ID_SPAN_PROGRESS_CHANNEL_7  "progressSpanID_ch7"
 #define ID_SPAN_PROGRESS_CHANNEL_8  "progressSpanID_ch8"
+#define ID_PROGRESS_LOOPTIME_1      "progressID_looptime1"
+#define ID_PROGRESS_LOOPTIME_2      "progressID_looptime2"
+#define ID_PROGRESS_LOOPTIME_3      "progressID_looptime3"
+#define ID_PROGRESS_LOOPTIME_4      "progressID_looptime4"
+#define ID_SPAN_PROGRESS_LOOPTIME_1 "progressSpanID_looptime1"
+#define ID_SPAN_PROGRESS_LOOPTIME_2 "progressSpanID_looptime2"
+#define ID_SPAN_PROGRESS_LOOPTIME_3 "progressSpanID_looptime3"
+#define ID_SPAN_PROGRESS_LOOPTIME_4 "progressSpanID_looptime4"
 
+#define ID_BUZZER_BUTTON            "buzzerButtonID"
 
-#define WEBPAGE_REFRESH_INTERVAL    "250"
-#define WEBPAGE_TIMEOUT             "200"
+#define TELEMETRY_REFRESH_INTERVAL    "250"
+#define TELEMETRY_RECEIVE_TIMEOUT     "1000"
+#define IS_ALIVE_REFRESH_INTERVAL     "100"
 
+#define ROW_HEIGHT_TH                 "20px"
+#define ROW_HEIGHT_TD                 "18px"
+#define LINE_HEIGHT_TD                "18px"
+#define FONT_SIZE_TH                  "15px"
+#define FONT_SIZE_TD                  "12px"
+#define FONT_SIZE_BUTTON              "20px"
 
 const uint8_t CHINOOK[UniqueIDsize] = {0xF0, 0x08, 0xD1, 0xD2, 0x4F, 0xFC};
-
-const float LOW_VOLTAGE_ALARM = 3.5;
-const float FULLY_CHARGED_VOLTAGE = 4.2;
-const float WARNING_VOLTAGE = 3.8;
 
 // [0..1] // 0-> no expo, 1-> max expo
 const double defaultRollExpoFactor = 0.10f; 
@@ -191,7 +224,23 @@ const boolean pitchChannelReversed = true;
 const boolean throttleChannelReversed = false;
 const boolean yawChannelReversed = false;
 
-extern volatile long usedUpLoopTime;
+const int MIN_RESPONSE_TIME = 0;
+const int WARNING_RESPONSE_TIME = 500;
+const int BAD_RESPONSE_TIME = 1000;
+const int MAX_RESPONSE_TIME = 1500;
+
+const int32_t MIN_SIGNAL_STRENGTH = -90;
+const int32_t LOW_SIGNAL_STRENGTH = -80;
+const int32_t WARNING_SIGNAL_STRENGTH = -67;
+const int32_t MAX_SIGNAL_STRENGTH = -30;
+
+const float LOW_VOLTAGE_ALARM = 3.5;
+const float FULLY_CHARGED_VOLTAGE = 4.2;
+const float WARNING_VOLTAGE = 3.8;
+
+
+extern volatile int32_t wiFiSignalStrength;
+extern volatile unsigned long usedUpLoopTimeTask1, usedUpLoopTimeTask2, usedUpLoopTimeTask3, usedUpLoopTimeTask4;
 extern volatile short gyro_x, gyro_y, gyro_z;
 extern volatile short acc_x, acc_y, acc_z;
 extern volatile short temperature;
@@ -214,13 +263,14 @@ extern volatile int frontEsc;
 extern volatile int backEsc;
 extern volatile int frontServo;
 extern volatile int backServo;
-extern volatile bool buzzerDisabled;
 extern volatile double rollExpoFactor;
 extern volatile double pitchExpoFactor;
 extern volatile double yawExpoFactor;
 extern volatile int frontServoCenterOffset;
 extern volatile int backServoCenterOffset;
 extern volatile double voltageCorrectionFactor;
+extern volatile bool buzzerDisabled;
+extern volatile bool buzzerOff;
 
 
 enum FlightMode { fmAutoLevel, fmAngleLimit, fmNone };
@@ -336,6 +386,7 @@ extern void IRAM_ATTR ppmInterruptHandler();
 extern String identifyRobot();
 extern double toDegrees(double prmRadians);
 extern bool isValidSignal(int prmPulse);
+extern int32_t getWiFiSignalStrength();
 extern float readVoltage();
 extern String getVoltageStr();
 extern int fixChannelDirection(int prmChannel, boolean prmReversed);
@@ -380,10 +431,14 @@ extern void writeServoPWM(uint8_t prmChannel, uint32_t prmMicroSeconds);
 extern void writeEscPWM(uint8_t prmChannel, uint32_t prmMicroSeconds);
 extern String getSSID();
 extern uint8_t* getChannelWithStrongestSignal(String prmSSID, int32_t *prmStrongestChannel);
+extern void task1(void *parameter);
+extern void task2(void *parameter);
+extern void task3(void *parameter);
+extern void task4(void *parameter);
 extern String getIdFromName(String prmName);
 extern bool isAPStarted();
 extern void WiFiAPStarted(WiFiEvent_t event, WiFiEventInfo_t info);
-extern String getWebPage();
+extern String getWebPage(String prmToBeClickedTabButton);
 extern String getLatestData();
 
 

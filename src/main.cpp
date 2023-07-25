@@ -1,6 +1,5 @@
 #include <functions.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncTCP.h>
+#include <WebServer.h>
 
 // configure failsafe for PPM on IA6B receiver: https://www.youtube.com/watch?v=T0DcXxpBS78
 // procedure to program receiver:
@@ -12,7 +11,7 @@
 // the transmitter itself cannot be sending these shorter pulses anymore
 
 
-TaskHandle_t core2;
+TaskHandle_t handle_task1, handle_task2, handle_task3, handle_task4;
 
 IPAddress ip(192, 168, 1, 170);
 IPAddress gateway(192,168,1,1);
@@ -26,8 +25,125 @@ IPAddress AP_subnet(255,255,255,0);
 const char* AP_password = "123gps456";
 const uint8_t AP_channel = 13;
 
-AsyncWebServer server(80);
+WebServer server(80);
 
+#define REDIRECT_TO_ROOT server.sendHeader("Location", "/", true); server.send(302, "text/plain", "");
+
+String activeTab = NAME_TAB_BUTTON_TELEMETRY;
+
+
+void getWebPageHandler() {
+  server.send(200, "text/html", getWebPage(activeTab)); 
+}
+
+void saveHandler() {
+  Serial.println("/Save");
+    
+  rollPID.set(server.arg("Roll1"), server.arg("Roll2"), server.arg("Roll3"), server.arg("Roll4"));
+  rollPID.print();
+  rollPID.save();
+
+  pitchPID.set(server.arg("Pitch1"), server.arg("Pitch2"), server.arg("Pitch3"), server.arg("Pitch4"));
+  pitchPID.print();
+  pitchPID.save();
+
+  yawPID.set(server.arg("Yaw1"), server.arg("Yaw2"), server.arg("Yaw3"), server.arg("Yaw4"));
+  yawPID.print();    
+  yawPID.save();
+
+  rollExpoFactor = checkExpo(server.arg(getIdFromName(NAME_ROLL_EXPO)).toDouble());
+  pitchExpoFactor = checkExpo(server.arg(getIdFromName(NAME_PITCH_EXPO)).toDouble());
+  yawExpoFactor = checkExpo(server.arg(getIdFromName(NAME_YAW_EXPO)).toDouble());
+  frontServoCenterOffset = checkCenterOffset(server.arg(getIdFromName(NAME_FRONT_SERVO_CENTER_OFFSET)).toInt());
+  backServoCenterOffset = checkCenterOffset(server.arg(getIdFromName(NAME_BACK_SERVO_CENTER_OFFSET)).toInt());
+  voltageCorrectionFactor = server.arg(getIdFromName(NAME_VOLTAGE_CORRECTION)).toDouble();
+  calibrated_angle_roll_acc = server.arg(getIdFromName(NAME_CALIBRATED_ROLL_ANGLE)).toDouble();
+  calibrated_angle_pitch_acc = server.arg(getIdFromName(NAME_CALIBRATED_PITCH_ANGLE)).toDouble();
+  printProps();
+  saveProps();
+
+  rollOutputPID.reset();
+  pitchOutputPID.reset();
+  yawOutputPID.reset();
+
+  REDIRECT_TO_ROOT;
+}
+
+
+void cancelHandler() {
+  Serial.println("/Cancel");
+  activeTab = NAME_TAB_BUTTON_SETTINGS;
+  REDIRECT_TO_ROOT;
+}  
+
+
+void calibrateAccHandler() {
+  Serial.println("/CalibrateAcc");
+  calibrateAcc();
+  saveProps();
+  activeTab = NAME_TAB_BUTTON_SETTINGS;
+  REDIRECT_TO_ROOT;
+}  
+
+
+void wifiOffHandler() {
+  Serial.println("/WifiOff");
+  WiFi.mode(WIFI_OFF);
+}  
+
+
+void buzzerOnOffHandler() {
+  Serial.println("/BuzzerOnOff");
+  buzzerOff = ! buzzerOff;
+  activeTab = NAME_TAB_BUTTON_SETTINGS;
+  REDIRECT_TO_ROOT;
+}  
+
+
+void defaultsHandler() {
+  Serial.println("/Defaults");
+    
+  rollPID.resetToDefault();
+  rollPID.print();
+  rollPID.save();
+
+  pitchPID.resetToDefault();
+  pitchPID.print();
+  pitchPID.save();
+
+  yawPID.resetToDefault();
+  yawPID.print();    
+  yawPID.save();
+
+  rollExpoFactor = defaultRollExpoFactor;
+  pitchExpoFactor = defaultPitchExpoFactor;
+  yawExpoFactor = defaultYawExpoFactor;
+  frontServoCenterOffset = defaultFrontServoCenterOffset;
+  backServoCenterOffset = defaultBackServoCenterOffset;
+  voltageCorrectionFactor = defaultVoltageCorrectionFactor;
+  calibrated_angle_roll_acc = defaultCalibratedRollAngleAcc;
+  calibrated_angle_pitch_acc = defaultCalibratedPitchAngleAcc;    
+  printProps();
+  saveProps();
+
+  rollOutputPID.reset();
+  pitchOutputPID.reset();
+  yawOutputPID.reset();
+
+  activeTab = NAME_TAB_BUTTON_SETTINGS;
+  REDIRECT_TO_ROOT;  
+}  
+
+
+void getLatestDataHandler() {
+  //Serial.println("getLatestDataHandler");
+  server.send(200, "text/html", getLatestData()); 
+}
+
+
+void notFoundHandler() {
+  server.send(404, "text/plain", "Not found");
+}
 
 
 void setup() {
@@ -51,26 +167,43 @@ void setup() {
   } else {
     Serial.println("SPIFFS Mount Failed");
   }
-
-  // pins
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(RECEIVER_PPM_PIN, INPUT_PULLUP);
-  pinMode(VOLTAGE_SENSOR_PIN, ANALOG);
-
-  // receiver
-  initReceiver();
-  attachInterrupt(RECEIVER_PPM_PIN, ppmInterruptHandler, FALLING);
-  delay(100);
-
-  // start second core
+ 
   xTaskCreatePinnedToCore(
-    runOnCore2,
-    "Core2",
-    STACK_SIZE_CORE2,
+    task1,
+    "task1",
+    STACK_SIZE_CORE,
     NULL,
     1,
-    &core2,
-    0);
+    &handle_task1,
+    CORE1);
+
+  xTaskCreatePinnedToCore(
+    task2,
+    "task2",
+    STACK_SIZE_CORE,
+    NULL,
+    1,
+    &handle_task2,
+    CORE1);
+
+  xTaskCreatePinnedToCore(
+    task3,
+    "task3",
+    STACK_SIZE_CORE,
+    NULL,
+    1,
+    &handle_task3,
+    CORE0);
+
+  xTaskCreatePinnedToCore(
+    task4,
+    "task4",
+    STACK_SIZE_CORE,
+    NULL,
+    1,
+    &handle_task4,
+    CORE1);
+
 
   int32_t strongestChannel;
   uint8_t* strongestBssid;
@@ -78,7 +211,7 @@ void setup() {
   strongestBssid = getChannelWithStrongestSignal(ssid, &strongestChannel);
   if (strongestBssid == NULL) {
     // standalone accesspoint
-    WiFi.onEvent(WiFiAPStarted, WiFiEvent_t::SYSTEM_EVENT_AP_START);
+    WiFi.onEvent(WiFiAPStarted, WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_START);
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP(getSSID().c_str(), AP_password, AP_channel); 
@@ -113,109 +246,36 @@ void setup() {
   }
 
   voltage = readVoltage();
-  Serial.print("Volatge [volt]: ");
+  Serial.print("Voltage [volt]: ");
   Serial.println(getVoltageStr());
   Serial.println();
 
   Serial.println("WebServer startup");
 
-  server.on("/", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {   
-    request->send(200, "text/html", getWebPage());
-  }); 
+  Serial.println("WebServer startup");
 
-  server.on("/Save", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("/Save");
-    
-    rollPID.set(request->getParam("Roll1")->value(), request->getParam("Roll2")->value(), request->getParam("Roll3")->value(), request->getParam("Roll4")->value());
-    rollPID.print();
-    rollPID.save();
+  server.on("/", HTTPMethod::HTTP_GET, getWebPageHandler);   
 
-    pitchPID.set(request->getParam("Pitch1")->value(), request->getParam("Pitch2")->value(), request->getParam("Pitch3")->value(), request->getParam("Pitch4")->value());
-    pitchPID.print();
-    pitchPID.save();
+  server.on("/Save", HTTPMethod::HTTP_GET, saveHandler);
 
-    yawPID.set(request->getParam("Yaw1")->value(), request->getParam("Yaw2")->value(), request->getParam("Yaw3")->value(), request->getParam("Yaw4")->value());
-    yawPID.print();    
-    yawPID.save();
+  server.on("/Cancel", HTTPMethod::HTTP_GET, cancelHandler);
 
-    rollExpoFactor = checkExpo(request->getParam(getIdFromName(NAME_ROLL_EXPO))->value().toDouble());
-    pitchExpoFactor = checkExpo(request->getParam(getIdFromName(NAME_PITCH_EXPO))->value().toDouble());
-    yawExpoFactor = checkExpo(request->getParam(getIdFromName(NAME_YAW_EXPO))->value().toDouble());
-    frontServoCenterOffset = checkCenterOffset(request->getParam(getIdFromName(NAME_FRONT_SERVO_CENTER_OFFSET))->value().toInt());
-    backServoCenterOffset = checkCenterOffset(request->getParam(getIdFromName(NAME_BACK_SERVO_CENTER_OFFSET))->value().toInt());
-    voltageCorrectionFactor = request->getParam(getIdFromName(NAME_VOLTAGE_CORRECTION))->value().toDouble();
-    calibrated_angle_roll_acc = request->getParam(getIdFromName(NAME_CALIBRATED_ROLL_ANGLE))->value().toDouble();
-    calibrated_angle_pitch_acc = request->getParam(getIdFromName(NAME_CALIBRATED_PITCH_ANGLE))->value().toDouble();
-    printProps();
-    saveProps();
+  server.on("/CalibrateAcc", HTTPMethod::HTTP_GET, calibrateAccHandler);
 
-    rollOutputPID.reset();
-    pitchOutputPID.reset();
-    yawOutputPID.reset();
+  server.on("/WifiOff", HTTPMethod::HTTP_GET, wifiOffHandler);
 
-    request->redirect("/");
-  });  
+  server.on("/BuzzerOnOff", HTTPMethod::HTTP_GET, buzzerOnOffHandler);
 
-  server.on("/Cancel", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("/Cancel");
-    request->redirect("/");
-  });  
+  server.on("/Defaults", HTTPMethod::HTTP_GET, defaultsHandler);
 
-  server.on("/CalibrateAcc", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("/CalibrateAcc");
-    calibrateAcc();
-    saveProps();
-    request->redirect("/");
-  });  
+  server.on("/RequestLatestData", HTTPMethod::HTTP_GET, getLatestDataHandler);
 
-  server.on("/WifiOff", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("/WifiOff");
-    WiFi.mode(WIFI_OFF);
-  });  
-
-  server.on("/Defaults", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("/Defaults");
-    
-    rollPID.resetToDefault();
-    rollPID.print();
-    rollPID.save();
-
-    pitchPID.resetToDefault();
-    pitchPID.print();
-    pitchPID.save();
-
-    yawPID.resetToDefault();
-    yawPID.print();    
-    yawPID.save();
-
-    rollExpoFactor = defaultRollExpoFactor;
-    pitchExpoFactor = defaultPitchExpoFactor;
-    yawExpoFactor = defaultYawExpoFactor;
-    frontServoCenterOffset = defaultFrontServoCenterOffset;
-    backServoCenterOffset = defaultBackServoCenterOffset;
-    voltageCorrectionFactor = defaultVoltageCorrectionFactor;
-    calibrated_angle_roll_acc = defaultCalibratedRollAngleAcc;
-    calibrated_angle_pitch_acc = defaultCalibratedPitchAngleAcc;    
-    printProps();
-    saveProps();
-
-    rollOutputPID.reset();
-    pitchOutputPID.reset();
-    yawOutputPID.reset();
-
-    request->redirect("/");
-  });    
-
-  server.on("/RequestLatestData", WebRequestMethod::HTTP_GET, [](AsyncWebServerRequest *request) {
-    //Serial.println("/RequestLatestData");
-    request->send(200, "application/json", getLatestData());
-  });  
+  server.onNotFound(notFoundHandler);
 
   server.begin();
 }
 
 
 void loop() {
-  voltage = LowPassFilter(BATTERY_NOICE_FILTER, readVoltage(), voltage);
-  vTaskDelay(1);
+  server.handleClient();
 }

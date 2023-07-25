@@ -1,6 +1,7 @@
 #include <functions.h>
 
 
+volatile int32_t wiFiSignalStrength = MIN_SIGNAL_STRENGTH;
 volatile bool APStarted = false;
 volatile int peakCount;
 volatile unsigned long previousTimerValue;
@@ -14,7 +15,6 @@ String robotName;
 volatile bool signal_detected = false;
 int signal_detected_count = 0;
 int signal_lost_count = SIGNALS_DETECTED_LOST_THRESHOLD;
-volatile bool buzzerDisabled = false;
 volatile double rollExpoFactor = defaultRollExpoFactor;
 volatile double pitchExpoFactor = defaultPitchExpoFactor;
 volatile double yawExpoFactor = defaultYawExpoFactor;
@@ -23,12 +23,13 @@ volatile int backServoCenterOffset = defaultBackServoCenterOffset;
 volatile double voltageCorrectionFactor = defaultVoltageCorrectionFactor;
 volatile double calibrated_angle_roll_acc = defaultCalibratedRollAngleAcc;
 volatile double calibrated_angle_pitch_acc = defaultCalibratedPitchAngleAcc; 
+volatile bool buzzerDisabled = false;
+volatile bool buzzerOff = false;
 
 volatile double roll_level_adjust, pitch_level_adjust, yaw_level_adjust;
 volatile double gyro_roll_input, gyro_pitch_input, gyro_yaw_input;
 volatile double pid_roll_setpoint, pid_pitch_setpoint, pid_yaw_setpoint;
 
-volatile long usedUpLoopTime;
 volatile short gyro_x, gyro_y, gyro_z;
 volatile short acc_x, acc_y, acc_z;
 volatile short temperature;
@@ -277,6 +278,15 @@ int getNrOfCells(float prmVBatTotal) {
 }
 
 
+int32_t getWiFiSignalStrength() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return WiFi.RSSI();
+  } else {
+    return MIN_SIGNAL_STRENGTH;
+  }
+}
+
+
 float readVoltage() {
   const float R1 = 4700.0;
   const float R2 = 1000.0;
@@ -478,7 +488,7 @@ void calibrateAcc() {
   double angleRollAcc = 0.0;
   double sumPitchAcc = 0.0;
   double sumRollAcc = 0.0;
-  long count = 1*1000*1000/LOOP_TIME;
+  long count = 1*1000*1000/LOOP_TIME_TASK3;
 
   for (long i = 0; i < count; i++) {
     double accTotalVector = sqrt((acc_roll.get()*acc_roll.get())+(acc_pitch.get()*acc_pitch.get())+(acc_yaw.get()*acc_yaw.get()));
@@ -493,7 +503,7 @@ void calibrateAcc() {
     sumPitchAcc += anglePitchAcc;
     sumRollAcc += angleRollAcc;
    
-    while(micros() - calibrationLoopTimer < LOOP_TIME) {
+    while(micros() - calibrationLoopTimer < LOOP_TIME_TASK3) {
       vTaskDelay(1);
     };
     calibrationLoopTimer = micros();
@@ -514,8 +524,13 @@ void calibrateAcc() {
 }
 
 
+double getLoopTimeHz(int prmLoopTime) {
+  return 1000000.0 / prmLoopTime;
+}
+
+
 void calcAngles() {
-  double factor = 1.0/(LOOP_TIME_HZ * 65.5);
+  double factor = 1.0/(getLoopTimeHz(LOOP_TIME_TASK3) * 65.5);
   angle_pitch += gyro_pitch.get() * factor;
   angle_roll += gyro_roll.get() * factor;
   angle_yaw += gyro_yaw.get() * factor;
@@ -742,11 +757,10 @@ FlightMode getFlightMode() {
 
 
 void playTune(String prmTune) {
-  if (!buzzerDisabled) {
+  if ((!buzzerDisabled) && (!buzzerOff)) {
     static char buf[64];
     strcpy(buf, prmTune.c_str());
     rtttl::begin(BUZZER_PIN, buf);
-    rtttl::play();
   }
 }
 
@@ -995,13 +1009,23 @@ String toString(double prmValue) {
 }
 
 
-String getBatteryProgressStr() {
-  return "<div class=\"progress\"><div id=\"" ID_PROGRESS_BATTERY "\" class=\"progress-bar progress-bar-danger\" role=\"progressbar\" aria-valuenow=\"0\" aria-valuemin=\"0\" aria-valuemax=\"100\" style=\"width:0%\">0%</div></div>";
+String getGenericProgressStr(String prmID, String prmSpanID, int prmValueMin, int prmValueMax) {
+  return "<div class=\"progress\"><div id=\"" + prmID + "\" class=\"progress-bar progress-bar-danger\" role=\"progressbar\" aria-valuenow=\"0\" aria-valuemin=\"" + String(prmValueMin) + "\"  aria-valuemax=\"" + String(prmValueMax) + "\" style=\"width:0%\"><span id=\"" + prmSpanID + "\" ></span></div></div>";
+}
+
+
+String getVoltageProgressStr() {
+  return "<div class=\"progress\"><div id=\"" ID_PROGRESS_VOLTAGE "\" class=\"progress-bar progress-bar-danger\" role=\"progressbar\" aria-valuenow=\"0\" aria-valuemin=\"0\" aria-valuemax=\"100\" style=\"width:0%\">0%</div></div>";
 }
 
 
 String getChannelProgressStr(String prmChannelDivID, String prmChannelSpanID, String prmColor) {
   return "<div class=\"progress\"><div id=\"" + prmChannelDivID + "\" class=\"progress-bar " + prmColor + "\"" + " role=\"progressbar\" aria-valuenow=\"0\" aria-valuemin=\"800\" aria-valuemax=\"2200\" style=\"width:0%\"><span id=\"" + prmChannelSpanID + "\" ></span></div></div>";
+}
+
+
+String getLoopTimeProgressStr(String prmLoopTimeID, String prmLoopTimeSpanID, int prmLoopTime) {
+  return "<div class=\"progress\"><div id=\"" + prmLoopTimeID + "\" class=\"progress-bar progress-bar-danger\" role=\"progressbar\" aria-valuenow=\"0\" aria-valuemin=\"0\" aria-valuemax=\"" + String(prmLoopTime) + "\" style=\"width:0%\"><span id=\"" + prmLoopTimeSpanID + "\" ></span></div></div>";
 }
 
 
@@ -1039,6 +1063,8 @@ String getHtmlHeader() {
 
   s += "  <style>";
   s += "    table, th, td {border: 1px solid black; border-collapse: collapse;}";
+  s += "    th { height: " ROW_HEIGHT_TH "; font-size: " FONT_SIZE_TH ";}";
+  s += "    td { height: " ROW_HEIGHT_TD "; font-size: " FONT_SIZE_TD ";}";
   s += "    tr:nth-child(even) { background-color: #eee }";
   s += "    tr:nth-child(odd) { background-color: #fff;}";
   s += "    td:first-child { background-color: lightgrey; color: black;}";
@@ -1048,8 +1074,8 @@ String getHtmlHeader() {
   s += "  <style>";
   s += "    html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}";
   s += "    .button { border-radius: 12px; background-color: grey; border: none; color: white; padding: 16px 40px;";
-  s += "    text-decoration: none; font-size: 20px; margin: 10px; cursor: pointer;}";
-  s += "    .progress-bar{float:left;width:0%;height:100%;font-size:16px;line-height:20px;color:#fff;text-align:center;background-color:#337ab7;-webkit-box-shadow:inset 0 -1px 0 rgba(0,0,0,.15);box-shadow:inset 0 -1px 0 rgba(0,0,0,.15);-webkit-transition:width .6s ease;-o-transition:width .6s ease;transition:width .6s ease}";
+  s += "    text-decoration: none; font-size:" FONT_SIZE_BUTTON "; margin: 10px; cursor: pointer;}";
+  s += "    .progress-bar{float:left;width:0%;height:100%;font-size:" FONT_SIZE_TD ";line-height:" LINE_HEIGHT_TD ";color:#fff;text-align:center;background-color:#337ab7;-webkit-box-shadow:inset 0 -1px 0 rgba(0,0,0,.15);box-shadow:inset 0 -1px 0 rgba(0,0,0,.15);-webkit-transition:width .6s ease;-o-transition:width .6s ease;transition:width .6s ease}";
   s += "    .progress-bar-success{background-color:#5cb85c}";
   s += "    .progress-bar-warning{background-color:#f0ad4e}";
   s += "    .progress-bar-danger{background-color:#d9534f}";
@@ -1066,7 +1092,7 @@ String getHtmlHeader() {
   s += "  <style>";
   s += "    .progress {";
   s += "        position: relative;";
-  s += "        height:20px;";
+  s += "        height:" ROW_HEIGHT_TD ";";
   s += "    }";
   s += "    .progress span {";
   s += "        position: absolute;";
@@ -1075,20 +1101,92 @@ String getHtmlHeader() {
   s += "        color: black;";
   s += "     }";
   s += "  </style>";  
+
+  s += "  <style>";
+  s += "    .btn-group button {";
+  s += "        width: 140px;";
+  s += "        height: 32px;";
+  s += "        white-space: nowrap;";
+  s += "        text-align:center;"; 
+  s += "        vertical-align:middle;";
+  s += "        padding: 0px;";
+  s += "    }";
+  s += "  </style>"; 
+
   s += "</head>";
   return s;
 }
 
 
-String getScript() {
+String getScript(String prmToBeClickedTabButton) {
   String s = "";
   s += "<script>";
 
-  s += "document.getElementById(\"defaultOpen\").click();";
+  s += "document.getElementById(\"" + getIdFromName(prmToBeClickedTabButton) + "\").click();";
+  s += "var errorCounter = 0;";
+  s += "var firstTimeOutOfSync = true;";
+  s += "var sendCounter = 0;";
+  s += "var receiveCounter = 0;";
+  s += "var requestSendTime = getTimeMS();";
+  s += "var responseReceiveTime = requestSendTime;";  
   s += "requestData();";
-  s += "var timerId = setInterval(requestData, " WEBPAGE_REFRESH_INTERVAL ");";
 
-  s += "function getBatColorMsg(prmVoltage) {";  
+  s += "var timerId = setInterval(requestData, " TELEMETRY_REFRESH_INTERVAL ");";
+  s += "var isAliveTimerId = setInterval(updateResponseTimeData, " IS_ALIVE_REFRESH_INTERVAL ");";
+
+  s += "function map(x, in_min, in_max, out_min, out_max) {";
+  s += "  run = in_max - in_min;";
+  s += "  if (run == 0) {";
+  s += "    return -1;";
+  s += "  }";
+  s += "  rise = out_max - out_min;";
+  s += "  delta = x - in_min;";
+  s += "  return (delta * rise) / run + out_min;";
+  s += "}";
+
+  s += "function getResponseTimeColorMsg(prmResponseTime) {";  
+  s += "  if (prmResponseTime > " + String(BAD_RESPONSE_TIME) + ") {";
+  s += "    return \"progress-bar progress-bar-danger\";";
+  s += "  } else if (prmResponseTime > " + String(WARNING_RESPONSE_TIME) + ") {";
+  s += "    return \"progress-bar progress-bar-warning\";";
+  s += "  } else {";
+  s += "    return \"progress-bar progress-bar-success\";";
+  s += "  }";  
+  s += "}";
+
+  s += "function getResponseTimePercentage(prmResponseTime) {";
+  s += "  var percentage = map(prmResponseTime," + String(MIN_RESPONSE_TIME) + "," + String(MAX_RESPONSE_TIME) + ",0,100);";
+  s += "  if (percentage > 100.0) {";
+  s += "    percentage = 100.0;";
+  s += "  }";
+  s += "  if (percentage < 0.0) {";
+  s += "    percentage = 0.0;";
+  s += "  }";
+  s += "  return percentage;";
+  s += "}";
+
+  s += "function getWiFiSignalStrengthColorMsg(prmWiFiSignalStrength) {";  
+  s += "  if (prmWiFiSignalStrength < " + String(LOW_SIGNAL_STRENGTH) + ") {";
+  s += "    return \"progress-bar progress-bar-danger\";";
+  s += "  } else if (prmWiFiSignalStrength < " + String(WARNING_SIGNAL_STRENGTH) + ") {";
+  s += "    return \"progress-bar progress-bar-warning\";";
+  s += "  } else {";
+  s += "    return \"progress-bar progress-bar-success\";";
+  s += "  }";  
+  s += "}";
+
+  s += "function getWiFiSignalStrengthPercentage(prmWiFiSignalStrength) {";
+  s += "  var percentage = map(prmWiFiSignalStrength," + String(MIN_SIGNAL_STRENGTH) + "," + String(MAX_SIGNAL_STRENGTH) + ",0,100);";
+  s += "  if (percentage > 100.0) {";
+  s += "    percentage = 100.0;";
+  s += "  }";
+  s += "  if (percentage < 0.0) {";
+  s += "    percentage = 0.0;";
+  s += "  }";
+  s += "  return percentage;";
+  s += "}";
+
+  s += "function getVoltageColorMsg(prmVoltage) {";  
   s += "  if (prmVoltage < " + String(LOW_VOLTAGE_ALARM, 2) + ") {";
   s += "    return \"progress-bar progress-bar-danger\";";
   s += "  } else if (prmVoltage <" + String(WARNING_VOLTAGE, 2) + ") {";
@@ -1098,7 +1196,7 @@ String getScript() {
   s += "  }";  
   s += "}";
 
-  s += "function getBatPercentage(prmVoltage) {";
+  s += "function getVoltagePercentage(prmVoltage) {";
   s += "  var percentage = 100.0*((prmVoltage - " + String(LOW_VOLTAGE_ALARM, 2) + ")/" + String(FULLY_CHARGED_VOLTAGE - LOW_VOLTAGE_ALARM, 2) + ");";
   s += "  if (percentage > 100.0) {";
   s += "    percentage = 100.0;";
@@ -1120,6 +1218,26 @@ String getScript() {
   s += "  return percentage;";
   s += "}";
 
+  s += "function updateResponseTime(prmDivProgressID, prmSpanProgressID, prmValue) {";
+  s += "  var divProgressElem = document.getElementById(prmDivProgressID);";
+  s += "  var spanProgressElem = document.getElementById(prmSpanProgressID);";
+  s += "  var responseTime = parseInt(prmValue);";
+  s += "  divProgressElem.setAttribute(\"class\", getResponseTimeColorMsg(responseTime));";
+  s += "  divProgressElem.setAttribute(\"aria-valuenow\", responseTime);";
+  s += "  divProgressElem.setAttribute(\"style\", \"width:\" + parseFloat(getResponseTimePercentage(responseTime)).toFixed(0) + \"%\");";
+  s += "  spanProgressElem.innerText = responseTime;";
+  s += "}";
+
+  s += "function updateWifiSignalStrength(prmDivProgressID, prmSpanProgressID, prmValue) {";
+  s += "  var divProgressElem = document.getElementById(prmDivProgressID);";
+  s += "  var spanProgressElem = document.getElementById(prmSpanProgressID);";
+  s += "  var wiFiSignalStrength = parseInt(prmValue);";
+  s += "  divProgressElem.setAttribute(\"class\", getWiFiSignalStrengthColorMsg(wiFiSignalStrength));";
+  s += "  divProgressElem.setAttribute(\"aria-valuenow\", wiFiSignalStrength);";
+  s += "  divProgressElem.setAttribute(\"style\", \"width:\" + parseFloat(getWiFiSignalStrengthPercentage(wiFiSignalStrength)).toFixed(0) + \"%\");";
+  s += "  spanProgressElem.innerText = wiFiSignalStrength;";
+  s += "}";
+
   s += "function updateChannel(prmDivProgressID, prmSpanProgressID, prmValue) {";
   s += "  var divProgressElem = document.getElementById(prmDivProgressID);";
   s += "  var spanProgressElem = document.getElementById(prmSpanProgressID);";
@@ -1129,15 +1247,93 @@ String getScript() {
   s += "  spanProgressElem.innerText = value;";
   s += "}";
 
+  s += "function updateLoopTime(prmDivProgressID, prmSpanProgressID, prmLoopTime, prmValue) {";
+  s += "  var divProgressElem = document.getElementById(prmDivProgressID);";
+  s += "  var spanProgressElem = document.getElementById(prmSpanProgressID);";
+  s += "  var usedUpLoopTime = parseInt(prmValue);";
+  s += "  divProgressElem.setAttribute(\"class\", getLoopTimeColorMsg(usedUpLoopTime, prmLoopTime));";
+  s += "  divProgressElem.setAttribute(\"aria-valuenow\", usedUpLoopTime);";
+  s += "  divProgressElem.setAttribute(\"style\", \"width:\" + parseFloat(getLoopTimePercentage(usedUpLoopTime, prmLoopTime)).toFixed(0) + \"%\");";
+  s += "  spanProgressElem.innerText = usedUpLoopTime;";
+  s += "}";
+
+  s += "function getLoopTimePercentage(prmUsedUpLoopTime, prmLoopTime) {";
+  s += "  var percentage = 100*prmUsedUpLoopTime/prmLoopTime;";
+  s += "  if (percentage > 100.0) {";
+  s += "    percentage = 100.0;";
+  s += "  }";
+  s += "  if (percentage < 0.0) {";
+  s += "    percentage = 0.0;";
+  s += "  }";
+  s += "  return percentage;";
+  s += "}";
+
+  s += "function getLoopTimeColorMsg(prmUsedUpLoopTime, prmLoopTime) {"; 
+  s += "  var percentage = getLoopTimePercentage(prmUsedUpLoopTime, prmLoopTime);";
+  s += "  if (percentage > 75) {";
+  s += "    return \"progress-bar progress-bar-danger\";";
+  s += "  } else if (percentage > 50) {";
+  s += "    return \"progress-bar progress-bar-warning\";";
+  s += "  } else {";
+  s += "    return \"progress-bar progress-bar-success\";";
+  s += "  }";  
+  s += "}";
+
+  s += "function getTimeMS() {";
+  s += "  var date = new Date();";
+  s += "  return date.getTime();";
+  s += "}";
+
+  s += "function updateResponseTimeData() {";
+  s += "  var responseTime =  responseReceiveTime-requestSendTime;";
+  s += "  if (responseTime < 0) {";
+  s += "    responseTime =  getTimeMS()-responseReceiveTime;";
+  s += "  }";
+  s += "  updateResponseTime(\"" + getIdFromName(ID_PROGRESS_RESP_TIME) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_RESP_TIME) + "\", responseTime);";
+  s += "}";
+
+  s += "function IsReadyToSendNextRequest() {";
+  s += "  if (sendCounter == receiveCounter) {"; 
+  s += "    firstTimeOutOfSync = true;";
+  s += "    errorCounter = 0;";  
+  s += "    return true;";
+  s += "  } else {";
+  s += "    if (firstTimeOutOfSync) {";
+  s += "      firstTimeOutOfSync = false;";  
+  s += "      return false;";
+  s += "    } else {";  
+  s += "      if (errorCounter > 10) {";
+  s += "        firstTimeOutOfSync = true;";  
+  s += "        errorCounter = 0;";
+  s += "        sendCounter = 0;";
+  s += "        receiveCounter = 0;";
+  s += "        return false;";
+  s += "      } else {";
+  s += "        errorCounter++;";  
+  s += "        return false;";
+  s += "      }";  
+  s += "    }";  
+  s += "  }";
+  s += "}";  
+
   s += "function requestData() {";
+  s += "  if (!IsReadyToSendNextRequest()) {";
+  s += "    return;";
+  s += "  }";  
+
   s += "  var xhr = new XMLHttpRequest();";  
   s += "  xhr.open(\"GET\", \"/RequestLatestData\", true);";
-  s += "  xhr.timeout = (" WEBPAGE_TIMEOUT ");";  
+  s += "  xhr.timeout = (" TELEMETRY_RECEIVE_TIMEOUT ");";  
   s += "  xhr.onload = function() {";
+  s += "    receiveCounter++;";
+  s += "    responseReceiveTime = getTimeMS();";
   s += "    if (xhr.status == 200) {";
   s += "      if (xhr.responseText) {";
   s += "        var data = JSON.parse(xhr.responseText);";
   s += "        var parser = new DOMParser();";
+
+  s += "        updateWifiSignalStrength(\"" + getIdFromName(ID_PROGRESS_WIFI_SS) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_WIFI_SS) + "\"," + "data." + getIdFromName(NAME_WIFI_SIGNAL_STRENGTH) + ");";
+
   s += "        document.getElementById(\"" + getIdFromName(NAME_SIGNAL_DETECTED) + "\").innerText = data." + getIdFromName(NAME_SIGNAL_DETECTED) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_ARMED) + "\").innerText = data." + getIdFromName(NAME_ARMED) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_FLIGHT_MODE) + "\").innerText = data." + getIdFromName(NAME_FLIGHT_MODE) + ";";
@@ -1149,19 +1345,20 @@ String getScript() {
   s += "        updateChannel(\"" + getIdFromName(ID_PROGRESS_CHANNEL_6) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_CHANNEL_6) + "\"," + "data." + getIdFromName(NAME_CHANNEL_6) + ");";
   s += "        updateChannel(\"" + getIdFromName(ID_PROGRESS_CHANNEL_7) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_CHANNEL_7) + "\"," + "data." + getIdFromName(NAME_CHANNEL_7) + ");";
   s += "        updateChannel(\"" + getIdFromName(ID_PROGRESS_CHANNEL_8) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_CHANNEL_8) + "\"," + "data." + getIdFromName(NAME_CHANNEL_8) + ");";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_BATTERY) + "\").innerText = data." + getIdFromName(NAME_BATTERY) + ";";  
-  s += "        var progressElem = document.getElementById(\"" ID_PROGRESS_BATTERY "\");";
-  s += "        var voltage = parseFloat(data." + getIdFromName(NAME_BATTERY) + ");";
-  s += "        progressElem.setAttribute(\"class\", getBatColorMsg(voltage));";
-  s += "        progressElem.setAttribute(\"aria-valuenow\", parseFloat(getBatPercentage(voltage)).toFixed(0));";
-  s += "        progressElem.setAttribute(\"style\", \"width:\" + parseFloat(getBatPercentage(voltage)).toFixed(0) + \"%\");";
-  s += "        progressElem.innerText = parseFloat(getBatPercentage(voltage)).toFixed(0) + \"%\";";
+
+  s += "        document.getElementById(\"" + getIdFromName(NAME_VOLTAGE) + "\").innerText = data." + getIdFromName(NAME_VOLTAGE) + ";";  
+  s += "        var voltageProgressElem = document.getElementById(\"" ID_PROGRESS_VOLTAGE "\");";
+  s += "        var voltage = parseFloat(data." + getIdFromName(NAME_VOLTAGE) + ");";
+  s += "        voltageProgressElem.setAttribute(\"class\", getVoltageColorMsg(voltage));";
+  s += "        voltageProgressElem.setAttribute(\"aria-valuenow\", parseFloat(getVoltagePercentage(voltage)).toFixed(0));";
+  s += "        voltageProgressElem.setAttribute(\"style\", \"width:\" + parseFloat(getVoltagePercentage(voltage)).toFixed(0) + \"%\");";
+  s += "        voltageProgressElem.innerText = parseFloat(getVoltagePercentage(voltage)).toFixed(0) + \"%\";";
+
   s += "        document.getElementById(\"" + getIdFromName(NAME_FRONT_ESC) + "\").innerText = data." + getIdFromName(NAME_FRONT_ESC) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_BACK_ESC) + "\").innerText = data." + getIdFromName(NAME_BACK_ESC) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_FRONT_SERVO) + "\").innerText = data." + getIdFromName(NAME_FRONT_SERVO) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_BACK_SERVO) + "\").innerText = data." + getIdFromName(NAME_BACK_SERVO) + ";";  
 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_USED_UP_LOOPTIME) + "\").innerText = data." + getIdFromName(NAME_USED_UP_LOOPTIME) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_X) + "\").innerText = data." + getIdFromName(NAME_GYRO_X) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_Y) + "\").innerText = data." + getIdFromName(NAME_GYRO_Y) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_Z) + "\").innerText = data." + getIdFromName(NAME_GYRO_Z) + ";";
@@ -1169,6 +1366,11 @@ String getScript() {
   s += "        document.getElementById(\"" + getIdFromName(NAME_ACC_Y) + "\").innerText = data." + getIdFromName(NAME_ACC_Y) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_ACC_Z) + "\").innerText = data." + getIdFromName(NAME_ACC_Z) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_TEMPERATURE) + "\").innerText = data." + getIdFromName(NAME_TEMPERATURE) + ";";
+
+  s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_1) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_1) + "\"," + String(LOOP_TIME_TASK1) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_1) + ");";
+  s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_2) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_2) + "\"," + String(LOOP_TIME_TASK2) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_2) + ");";
+  s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_3) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_3) + "\"," + String(LOOP_TIME_TASK3) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_3) + ");";
+  s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_4) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_4) + "\"," + String(LOOP_TIME_TASK4) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_4) + ");";
 
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_ROLL_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_ROLL_ACC) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH_ACC) + ";";
@@ -1202,9 +1404,14 @@ String getScript() {
   s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW) + ";"; 
 
+  s += "        document.getElementById(" + addDQuotes(ID_BUZZER_BUTTON) + ").innerText = data." + ID_BUZZER_BUTTON + ";";   
+
   s += "      }";  
   s += "    }";
   s += "  };";
+
+  s += "  requestSendTime = getTimeMS();"; 
+  s += "  sendCounter++;";
   s += "  xhr.send();";  
   s += "}";
   
@@ -1264,17 +1471,26 @@ String getFlightModeSt() {
 }
 
 
-String getWebPage() {
+String getBuzzerCaption() {
+  String st = "Buzzer ";
+  st += buzzerOff ? "On" : "Off";
+  return st;
+}
+
+
+String getWebPage(String prmToBeClickedTabButton) {
   String s = "<!DOCTYPE html><html>";
   s += getHtmlHeader();
 
+  s += "<body>";
+
   s += "<div class=\"tab\">";
-  s += "<button class=\"tablinks\" onclick=\"selectTab(event, 'Telemetry')\" id=\"defaultOpen\">Telemetry</button>";
-  s += "<button class=\"tablinks\" onclick=\"selectTab(event, 'Settings')\">Settings</button>";
+  s += "<button class=\"tablinks\" onclick=\"selectTab(event, '" + getIdFromName(NAME_TAB_TELEMETRY) + "')\" id=\"" + getIdFromName(NAME_TAB_BUTTON_TELEMETRY) + "\">" NAME_TAB_TELEMETRY "</button>";
+  s += "<button class=\"tablinks\" onclick=\"selectTab(event, '" + getIdFromName(NAME_TAB_SETTINGS) + "')\" id=\"" + getIdFromName(NAME_TAB_BUTTON_SETTINGS) + "\">" NAME_TAB_SETTINGS "</button>";
   s += "</div>";
 
 
-  s += "<div id=\"Telemetry\" class=\"tabcontent\">";
+  s += "<div id=\"" NAME_TAB_TELEMETRY "\" class=\"tabcontent\">";
 
   s += "<br>";
   s += "<br>";
@@ -1282,6 +1498,8 @@ String getWebPage() {
   s += "<table ALIGN=CENTER style=width:50%>";
   s += addRow(NAME_MODEL, false, true, robotName);
   s += addRow(NAME_VERSION, false, false, CHINOOK_VERSION);
+  s += addRow(NAME_RESPONSE_TIME, false, false, getGenericProgressStr(ID_PROGRESS_RESP_TIME, ID_SPAN_PROGRESS_RESP_TIME, MIN_RESPONSE_TIME, MAX_RESPONSE_TIME));
+  s += addRow(NAME_WIFI_SIGNAL_STRENGTH, false, false, getGenericProgressStr(ID_PROGRESS_WIFI_SS, ID_SPAN_PROGRESS_WIFI_SS, MIN_SIGNAL_STRENGTH, MAX_SIGNAL_STRENGTH));
   s += addRow(NAME_SIGNAL_DETECTED, false, false);
   s += addRow(NAME_ARMED, false, false);
   s += addRow(NAME_FLIGHT_MODE, false, false);
@@ -1293,8 +1511,8 @@ String getWebPage() {
   s += addRow(NAME_CHANNEL_6, false, false, getChannelProgressStr(ID_PROGRESS_CHANNEL_6, ID_SPAN_PROGRESS_CHANNEL_6, "progress-bar-ch6"));  
   s += addRow(NAME_CHANNEL_7, false, false, getChannelProgressStr(ID_PROGRESS_CHANNEL_7, ID_SPAN_PROGRESS_CHANNEL_7, "progress-bar-ch7"));  
   s += addRow(NAME_CHANNEL_8, false, false, getChannelProgressStr(ID_PROGRESS_CHANNEL_8, ID_SPAN_PROGRESS_CHANNEL_8, "progress-bar-ch8"));  
-  s += addRow(NAME_BATTERY, false, false);
-  s += addRow(NAME_BATTERY_PROGRESS, false, false, getBatteryProgressStr());
+  s += addRow(NAME_VOLTAGE, false, false);
+  s += addRow(NAME_VOLTAGE_PROGRESS, false, false, getVoltageProgressStr());
   s += addRow(NAME_FRONT_ESC, false, false);
   s += addRow(NAME_BACK_ESC, false, false);
   s += addRow(NAME_FRONT_SERVO, false, false);
@@ -1306,7 +1524,10 @@ String getWebPage() {
   s += addRow(NAME_ACC_Y, false, false);
   s += addRow(NAME_ACC_Z, false, false);
   s += addRow(NAME_TEMPERATURE, false, false);
-  s += addRow(NAME_USED_UP_LOOPTIME, false, false);
+  s += addRow(NAME_USED_UP_LOOPTIME_PROGRESS_1, false, false, getLoopTimeProgressStr(ID_PROGRESS_LOOPTIME_1, ID_SPAN_PROGRESS_LOOPTIME_1, LOOP_TIME_TASK1));
+  s += addRow(NAME_USED_UP_LOOPTIME_PROGRESS_2, false, false, getLoopTimeProgressStr(ID_PROGRESS_LOOPTIME_2, ID_SPAN_PROGRESS_LOOPTIME_2, LOOP_TIME_TASK2));
+  s += addRow(NAME_USED_UP_LOOPTIME_PROGRESS_3, false, false, getLoopTimeProgressStr(ID_PROGRESS_LOOPTIME_3, ID_SPAN_PROGRESS_LOOPTIME_3, LOOP_TIME_TASK3));
+  s += addRow(NAME_USED_UP_LOOPTIME_PROGRESS_4, false, false, getLoopTimeProgressStr(ID_PROGRESS_LOOPTIME_4, ID_SPAN_PROGRESS_LOOPTIME_4, LOOP_TIME_TASK4));  
   s += "</table>";
 
   s += "<br>";
@@ -1322,7 +1543,7 @@ String getWebPage() {
   s += "</div>";
 
 
-  s += "<div id=\"Settings\" class=\"tabcontent\">";
+  s += "<div id=\"" NAME_TAB_SETTINGS "\" class=\"tabcontent\">";
 
   s += "<br>";
   s += "<br>";
@@ -1353,15 +1574,20 @@ String getWebPage() {
   s += "<br>";
 
   s += "<div class=\"btn-group\" style=\"width:100%\">";
-  s += "<a><button onclick=\"savePropValues()\" type=\"button\" style=\"width:140px\" class=\"button\">Save</button></a>";  
-  s += "<a href=\"/Cancel\"><button type=\"button\" style=\"width:140px\" class=\"button\">Cancel</button></a>";
-  s += "<a href=\"/CalibrateAcc\"><button type=\"button\" style=\"width:180px;white-space:nowrap\" class=\"button\">Calibrate Acc</button></a>";
-  s += "<a href=\"/WifiOff\"><button type=\"button\" style=\"width:140px;white-space:nowrap\" class=\"button\">Wifi Off</button></a>";
-  s += "<a href=\"/Defaults\"><button type=\"button\" style=\"width:140px\" class=\"button\">Defaults</button></a>";
-  s += "</div>";
+  s += "<a href=\"/CalibrateAcc\"><button type=\"button\" style=\"width:180px;\" class=\"button\">Calibrate Acc</button></a>";  
+  s += "<a href=\"/BuzzerOnOff\"><button id=" + addDQuotes(ID_BUZZER_BUTTON) + " type=\"button\" style=\"width:160px;\" class=\"button\">" + getBuzzerCaption() + "</button></a>";
+  s += "<a href=\"/WifiOff\"><button type=\"button\" class=\"button\">Wifi Off</button></a>";
   s += "</div>";
 
-  s += getScript();
+  s += "<div class=\"btn-group\" style=\"width:100%\">";
+  s += "<a><button onclick=\"savePropValues()\" type=\"button\" class=\"button\">Save</button></a>";  
+  s += "<a href=\"/Cancel\"><button type=\"button\" class=\"button\">Cancel</button></a>";
+  s += "<a href=\"/Defaults\"><button type=\"button\" class=\"button\">Defaults</button></a>";
+  s += "</div>";
+
+  s += "</div>";  
+
+  s += getScript(prmToBeClickedTabButton);
 
   s += "</body></html>";  
   return s;
@@ -1370,6 +1596,8 @@ String getWebPage() {
 
 String getLatestData() {
   String data = "{";
+
+  data += "\"" + getIdFromName(NAME_WIFI_SIGNAL_STRENGTH) + "\":" + addDQuotes(toString(wiFiSignalStrength)) + ",";
   data += "\"" + getIdFromName(NAME_SIGNAL_DETECTED) + "\":" + addDQuotes(toString(signal_detected)) + ",";
   data += "\"" + getIdFromName(NAME_ARMED) + "\":" + addDQuotes(toString(isArmed())) + ",";
   data += "\"" + getIdFromName(NAME_FLIGHT_MODE) + "\":" + addDQuotes(getFlightModeSt()) + ",";
@@ -1381,12 +1609,16 @@ String getLatestData() {
   data += "\"" + getIdFromName(NAME_CHANNEL_6) + "\":" + addDQuotes(toString(channel[5])) + ",";
   data += "\"" + getIdFromName(NAME_CHANNEL_7) + "\":" + addDQuotes(toString(channel[6])) + ",";
   data += "\"" + getIdFromName(NAME_CHANNEL_8) + "\":" + addDQuotes(toString(channel[7])) + ",";
-  data += "\"" + getIdFromName(NAME_BATTERY) + "\":" + addDQuotes(getVoltageStr()) + ",";  
+  data += "\"" + getIdFromName(NAME_VOLTAGE) + "\":" + addDQuotes(getVoltageStr()) + ",";  
   data += "\"" + getIdFromName(NAME_FRONT_ESC) + "\":" + addDQuotes(toString(frontEsc)) + ",";  
   data += "\"" + getIdFromName(NAME_BACK_ESC) + "\":" + addDQuotes(toString(backEsc)) + ",";  
   data += "\"" + getIdFromName(NAME_FRONT_SERVO) + "\":" + addDQuotes(toString(frontServo)) + ",";  
   data += "\"" + getIdFromName(NAME_BACK_SERVO) + "\":" + addDQuotes(toString(backServo)) + ",";  
-  data += "\"" + getIdFromName(NAME_USED_UP_LOOPTIME) + "\":" + String(usedUpLoopTime) + ",";
+  data += "\"" + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_1) + "\":" + String(usedUpLoopTimeTask1) + ",";
+  data += "\"" + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_2) + "\":" + String(usedUpLoopTimeTask2) + ",";
+  data += "\"" + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_3) + "\":" + String(usedUpLoopTimeTask3) + ",";
+  data += "\"" + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_4) + "\":" + String(usedUpLoopTimeTask4) + ",";
+
 
   data += "\"" + getIdFromName(NAME_GYRO_X) + "\":" + addDQuotes(String(gyro_x)) + ",";
   data += "\"" + getIdFromName(NAME_GYRO_Y) + "\":" + addDQuotes(String(gyro_y)) + ",";
@@ -1434,7 +1666,9 @@ String getLatestData() {
 
   data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL) + "\":" + String(rollOutputPID.getOutput(), 2) + ",";
   data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH) + "\":" + String(pitchOutputPID.getOutput(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW) + "\":" + String(yawOutputPID.getOutput(), 2);
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW) + "\":" + String(yawOutputPID.getOutput(), 2) + ",";
+
+  data += addDQuotes(ID_BUZZER_BUTTON) + ":" + addDQuotes(getBuzzerCaption());
 
   data += "}";
   //Serial.println(data);
