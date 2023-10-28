@@ -1,59 +1,37 @@
 #include <functions.h>
 
 volatile unsigned long usedUpLoopTimeTask2;
-bool previousIsArmed = false;
+
 
 
 void task2_setup() {
-  pinMode(RECEIVER_PPM_PIN, INPUT_PULLUP);
+  signal_micros_timer_value = 0;
 
-  // receiver
-  initReceiver();
-  attachInterrupt(RECEIVER_PPM_PIN, ppmInterruptHandler, FALLING);
-  //delay(100);
+  pinMode(RECEIVER_STEER_PIN, INPUT);
+  pinMode(RECEIVER_THROTTLE_PIN, INPUT);
+  pinMode(RECEIVER_SPEED_MODE_PIN, INPUT);  
+
+  attachInterrupt(RECEIVER_STEER_PIN, handler_channel_1, CHANGE);
+  attachInterrupt(RECEIVER_THROTTLE_PIN, handler_channel_2, CHANGE);
+  attachInterrupt(RECEIVER_SPEED_MODE_PIN, handler_channel_3, CHANGE);
   
+  prev_signal_detected = signal_detected;
   usedUpLoopTimeTask2 = 0;
 }
 
 
 void task2_loop() {
-  int throttleSignal = channel[2]; 
-  if (isValidSignal(throttleSignal)) {
-    bool is_signal_detected = (throttleSignal > SIGNAL_LOST_PULSE);
-    if (is_signal_detected) {
-      signal_detected_count++;      
-      if (signal_detected_count == SIGNALS_DETECTED_LOST_THRESHOLD) {
-        signal_detected = true;
-        playSignalDetected();
-      } else if (signal_detected_count > SIGNALS_DETECTED_LOST_THRESHOLD) {
-        signal_detected_count = SIGNALS_DETECTED_LOST_THRESHOLD;
-        signal_lost_count = 0;        
-      }
-    } else {
-      signal_lost_count++;      
-      if (signal_lost_count == SIGNALS_DETECTED_LOST_THRESHOLD) {
-        signal_detected = false;
-        playSignalLost();
-      } else if (signal_lost_count > SIGNALS_DETECTED_LOST_THRESHOLD) {
-        signal_lost_count = SIGNALS_DETECTED_LOST_THRESHOLD;
-        signal_detected_count = 0;
-      }
+  if (signal_detected) {
+    if (!prev_signal_detected) {
+      playSignalDetected();
     }
-  } 
-
-  bool actualIsArmed = isArmed();
-  if (actualIsArmed && !previousIsArmed) {
-    if (isArmingAllowed()) {
-      initValues();
-      playArmed();
-    } else {
-      actualIsArmed = false;
+  } else {
+    if (prev_signal_detected) {
+      playSignalLost();
     }
-  } else if (!actualIsArmed && previousIsArmed) {
-    initValues();
-    playDisarmed();
   }
-  previousIsArmed = actualIsArmed;
+  checkIsArmed();
+  prev_signal_detected = signal_detected;  
 }
 
 
