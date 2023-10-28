@@ -1,7 +1,7 @@
 #include <functions.h>
 
 volatile unsigned long usedUpLoopTimeTask1;
-unsigned long voltageTimer, ledTimer;
+unsigned long voltageTimer;
 int lowVoltageAlarmCount;
 
 
@@ -9,14 +9,6 @@ void task1_setup() {
   Serial.begin(115200);  
 
   pinMode(VOLTAGE_SENSOR_PIN, ANALOG);
-  pinMode(CURRENT_SENSOR_PIN, ANALOG);
-  pinMode(LED_PIN, OUTPUT);
-
-  nrOfLEDStrips = getNrOfLEDStrips();
-  hasGPSSensor = getHasGPSSensor();
-  hasCurrentSensor = getHasCurrentSensor();
-
-  initLEDs();  
 
   voltage = readVoltage();
   lowVoltageAlarmCount = 0;
@@ -26,11 +18,8 @@ void task1_setup() {
   Serial.println();
 
   voltageTimer = millis();
-  ledTimer = millis();
 
   usedUpLoopTimeTask1 = 0;
-
-  hs.begin(9600);
 }
 
 
@@ -39,8 +28,11 @@ void task1_loop() {
 
   wiFiSignalStrength = getWiFiSignalStrength();
   voltage = LowPassFilter(VOLTAGE_NOICE_FILTER, readVoltage(), voltage);
-  current = LowPassFilter(CURRENT_NOICE_FILTER, readCurrent(), current);  
-  getGPSData();
+
+  if (isBootButtonPressed()) {
+    waitForBootButtonClicked();
+    calibrateESCs();
+  }
 
   // check battery voltage once per second
   if ((millisTimer - voltageTimer) > 1000) {
@@ -57,12 +49,6 @@ void task1_loop() {
       lowVoltageAlarmCount = 0;
     }
   }    
-
-  // update LEDs
-  if ((millisTimer - ledTimer) > 250) {
-    ledTimer = millisTimer;
-    updateLEDs();
-  }
 }
 
 
