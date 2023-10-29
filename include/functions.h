@@ -4,6 +4,8 @@
 #include <arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <PPMReceiver.h>
+#include <pid.h>
 #include <esp_wifi.h>
 #include <NonBlockingRtttl.h>
 #include <ArduinoUniqueID.h>
@@ -32,9 +34,16 @@
 #define LOOP_TIME_TASK4             10000    // microseconds; 100Hz
 
 
-#define PPM_PULSE_TRAIN_PERIOD  5000   // microsec
 #define NR_OF_RECEIVER_CHANNELS 8      //FS-IA6B
-#define MAX_PEAK_COUNT          (NR_OF_RECEIVER_CHANNELS+1)
+
+#define ROLL_CHANNEL              1
+#define PITCH_CHANNEL             2
+#define THROTTLE_CHANNEL          3
+#define YAW_CHANNEL               4
+#define SWA_CHANNEL               5
+#define SWB_CHANNEL               7
+#define SWC_CHANNEL               6
+#define SWD_CHANNEL               8
 
 #define RECEIVER_PPM_PIN          33
 #define BUZZER_PIN                23
@@ -68,16 +77,19 @@
 #define INVALID_SIGNAL_PULSE      800
 #define SIGNALS_DETECTED_LOST_THRESHOLD   50 
 
-#define FLIGHT_MODE_MAX_ANGLE       30
+#define FLIGHT_MODE_MAX_ROLL_ANGLE     50.0
+#define FLIGHT_MODE_MAX_PITCH_ANGLE    50.0
 
 #define VOLTAGE_NOICE_FILTER        0.92
 
 #define SSID_BASE                   "CHINOOK_ESP32_"
 
 #define NAME_TAB_TELEMETRY          "Telemetry"
+#define NAME_TAB_PID                "Pid"
 #define NAME_TAB_SETTINGS           "Settings"
 
 #define NAME_TAB_BUTTON_TELEMETRY   "BTN_" NAME_TAB_TELEMETRY
+#define NAME_TAB_BUTTON_PID         "BTN_" NAME_TAB_PID
 #define NAME_TAB_BUTTON_SETTINGS    "BTN_" NAME_TAB_SETTINGS 
 
 #define NAME_MODEL                  "Model"
@@ -110,6 +122,8 @@
 #define NAME_TEMPERATURE            "Temperature [C]"
 #define NAME_ANGLE_ROLL_ACC         "angle_roll_acc"
 #define NAME_ANGLE_PITCH_ACC        "angle_pitch_acc"
+#define NAME_ANGLE_ROLL_ACC_COPY    "angle_roll_acc_copy"
+#define NAME_ANGLE_PITCH_ACC_COPY   "angle_pitch_acc_copy"
 #define NAME_ANGLE_YAW_ACC          "angle_yaw_acc"
 #define NAME_SETTINGS               "Settings"
 #define NAME_ROLL_EXPO              "Roll Expo"
@@ -122,41 +136,60 @@
 #define NAME_CALIBRATED_ACCY        "Calibrated AccY"
 #define NAME_CALIBRATED_ACCZ        "Calibrated AccZ"
 
-#define NAME_PID_SETTINGS_ROLL      "Roll"
-#define NAME_PID_SETTINGS_PITCH     "Pitch"
-#define NAME_PID_SETTINGS_YAW       "Yaw"
+#define NAME_PID_SETTINGS_ROLL_ANGLE   "Roll Angle"
+#define NAME_PID_SETTINGS_PITCH_ANGLE  "Pitch Angle"
 
-#define NAME_TELEMETRY_ROLL         "Roll"
-#define NAME_TELEMETRY_PITCH        "Pitch"
-#define NAME_TELEMETRY_YAW          "Yaw"
+#define NAME_PID_SETTINGS_ROLL_RATE    "Roll Rate"
+#define NAME_PID_SETTINGS_PITCH_RATE   "Pitch Rate"
+#define NAME_PID_SETTINGS_YAW_RATE     "Yaw Rate"
+
+#define NAME_TELEMETRY_ROLL_ANGLE   "Roll Angle"
+#define NAME_TELEMETRY_PITCH_ANGLE  "Pitch Angle"
+#define NAME_TELEMETRY_ROLL_RATE    "Roll Rate"
+#define NAME_TELEMETRY_PITCH_RATE   "Pitch Rate"
+#define NAME_TELEMETRY_YAW_RATE     "Yaw Rate"
 #define NAME_ANGLE_ROLL             "Angle Roll"
 #define NAME_ANGLE_PITCH            "Angle Pitch"
+#define NAME_ANGLE_ROLL_COPY        "Angle Roll Copy"
+#define NAME_ANGLE_PITCH_COPY       "Angle Pitch Copy"
 #define NAME_ANGLE_YAW              "Angle Yaw"
-#define NAME_ROLL_LEVEL_ADJUST      "Roll Level Adjust"
-#define NAME_PITCH_LEVEL_ADJUST     "Pitch Level Adjust"
-#define NAME_YAW_LEVEL_ADJUST       "Yaw Level Adjust"
-#define NAME_GYRO_ROLL_INPUT        "Gyro Roll Input"
-#define NAME_GYRO_PITCH_INPUT       "Gyro Pitch Input"
-#define NAME_GYRO_YAW_INPUT         "Gyro Yaw Input"
-#define NAME_PID_ROLL_SETPOINT      "PID Roll Setpoint"
-#define NAME_PID_PITCH_SETPOINT     "PID Pitch Setpoint"
-#define NAME_PID_YAW_SETPOINT       "PID Yaw Setpoint"
+#define NAME_KALMAN_ROLL_ANGLE_INPUT   "Kalman Roll Angle Input"
+#define NAME_KALMAN_PITCH_ANGLE_INPUT  "Kalman Pitch Angle Input"
+#define NAME_GYRO_ROLL_RATE_INPUT   "Gyro Roll Rate Input"
+#define NAME_GYRO_PITCH_RATE_INPUT  "Gyro Pitch Rate Input"
+#define NAME_GYRO_YAW_RATE_INPUT    "Gyro Yaw Rate Input"
+#define NAME_PID_ROLL_ANGLE_DESIRED  "PID Roll Angle Desired"
+#define NAME_PID_PITCH_ANGLE_DESIRED "PID Pitch Angle Desired"
+#define NAME_PID_ROLL_RATE_DESIRED  "PID Roll Rate Desired"
+#define NAME_PID_PITCH_RATE_DESIRED "PID Pitch Rate Desired"
+#define NAME_PID_YAW_RATE_DESIRED   "PID Yaw Rate Desired"
 
-#define NAME_PID_OUTPUT_ROLL_ERROR  "PID Output Roll Error"
-#define NAME_PID_OUTPUT_PITCH_ERROR "PID Output Pitch Error"
-#define NAME_PID_OUTPUT_YAW_ERROR   "PID Output Yaw Error"
-#define NAME_PID_OUTPUT_ROLL_P      "PID Output Roll P"
-#define NAME_PID_OUTPUT_PITCH_P     "PID Output Pitch P"
-#define NAME_PID_OUTPUT_YAW_P       "PID Output Yaw P"
-#define NAME_PID_OUTPUT_ROLL_I      "PID Output Roll I"
-#define NAME_PID_OUTPUT_PITCH_I     "PID Output Pitch I"
-#define NAME_PID_OUTPUT_YAW_I       "PID Output Yaw I"
-#define NAME_PID_OUTPUT_ROLL_D      "PID Output Roll D"
-#define NAME_PID_OUTPUT_PITCH_D     "PID Output Pitch D"
-#define NAME_PID_OUTPUT_YAW_D       "PID Output Yaw D"
-#define NAME_PID_OUTPUT_ROLL        "PID Output Roll"
-#define NAME_PID_OUTPUT_PITCH       "PID Output Pitch"
-#define NAME_PID_OUTPUT_YAW         "PID Output Yaw"
+#define NAME_PID_OUTPUT_ROLL_ANGLE_ERROR  "PID Output Roll Angle Error"
+#define NAME_PID_OUTPUT_PITCH_ANGLE_ERROR "PID Output Pitch Angle Error"
+#define NAME_PID_OUTPUT_ROLL_ANGLE_P      "PID Output Roll Angle P"
+#define NAME_PID_OUTPUT_PITCH_ANGLE_P     "PID Output Pitch Angle P"
+#define NAME_PID_OUTPUT_ROLL_ANGLE_I      "PID Output Roll Angle I"
+#define NAME_PID_OUTPUT_PITCH_ANGLE_I     "PID Output Pitch Angle I"
+#define NAME_PID_OUTPUT_ROLL_ANGLE_D      "PID Output Roll Angle D"
+#define NAME_PID_OUTPUT_PITCH_ANGLE_D     "PID Output Pitch Angle D"
+#define NAME_PID_OUTPUT_ROLL_ANGLE        "PID Output Roll Angle"
+#define NAME_PID_OUTPUT_PITCH_ANGLE       "PID Output Pitch Angle"
+
+#define NAME_PID_OUTPUT_ROLL_RATE_ERROR  "PID Output Roll Rate Error"
+#define NAME_PID_OUTPUT_PITCH_RATE_ERROR "PID Output Pitch Rate Error"
+#define NAME_PID_OUTPUT_YAW_RATE_ERROR   "PID Output Yaw Rate Error"
+#define NAME_PID_OUTPUT_ROLL_RATE_P      "PID Output Roll Rate P"
+#define NAME_PID_OUTPUT_PITCH_RATE_P     "PID Output Pitch Rate P"
+#define NAME_PID_OUTPUT_YAW_RATE_P       "PID Output Yaw Rate P"
+#define NAME_PID_OUTPUT_ROLL_RATE_I      "PID Output Roll Rate I"
+#define NAME_PID_OUTPUT_PITCH_RATE_I     "PID Output Pitch Rate I"
+#define NAME_PID_OUTPUT_YAW_RATE_I       "PID Output Yaw Rate I"
+#define NAME_PID_OUTPUT_ROLL_RATE_D      "PID Output Roll Rate D"
+#define NAME_PID_OUTPUT_PITCH_RATE_D     "PID Output Pitch Rate D"
+#define NAME_PID_OUTPUT_YAW_RATE_D       "PID Output Yaw Rate D"
+#define NAME_PID_OUTPUT_ROLL_RATE        "PID Output Roll Rate"
+#define NAME_PID_OUTPUT_PITCH_RATE       "PID Output Pitch Rate"
+#define NAME_PID_OUTPUT_YAW_RATE         "PID Output Yaw Rate"
 
 #define NAME_FRONT_ESC              "Front Esc"
 #define NAME_BACK_ESC               "Back Esc"
@@ -213,14 +246,14 @@ const double defaultRollExpoFactor = 0.10f;
 const double defaultPitchExpoFactor = 0.10f; 
 const double defaultYawExpoFactor = 0.30f; 
 
-const int defaultFrontServoCenterOffset = 110;
-const int defaultBackServoCenterOffset = 100;
+const int defaultFrontServoCenterOffset = 0;
+const int defaultBackServoCenterOffset = 0;
 const double defaultVoltageCorrectionFactor = 1.0;
 
 const boolean rollChannelReversed = false;
 const boolean pitchChannelReversed = true;
 const boolean throttleChannelReversed = false;
-const boolean yawChannelReversed = false;
+const boolean yawChannelReversed = true;
 
 const int MIN_RESPONSE_TIME = 0;
 const int WARNING_RESPONSE_TIME = 500;
@@ -237,19 +270,19 @@ const float FULLY_CHARGED_VOLTAGE = 4.2;
 const float WARNING_VOLTAGE = 3.8;
 
 
+extern PPMReceiver *ppm;
 extern volatile int32_t wiFiSignalStrength;
 extern volatile unsigned long usedUpLoopTimeTask1, usedUpLoopTimeTask2, usedUpLoopTimeTask3, usedUpLoopTimeTask4;
 extern MPU6050 mpu6050;
-extern volatile double angle_pitch, angle_roll, angle_yaw;
-extern volatile double roll_level_adjust, pitch_level_adjust, yaw_level_adjust;
+extern volatile double kalmanPitchAngle, kalmanRollAngle, yawAngle;
 extern volatile double gyro_roll_input, gyro_pitch_input, gyro_yaw_input;
-extern volatile double pid_roll_setpoint, pid_pitch_setpoint, pid_yaw_setpoint;
+extern volatile double desiredRollAngle, desiredPitchAngle;
+extern volatile double desiredRollRate, desiredPitchRate, desiredYawRate;
 extern String robotName;
 extern volatile bool signal_detected;
 extern int signal_detected_count;
 extern int signal_lost_count;
 extern Adafruit_PWMServoDriver pwm;
-extern volatile int channel[];
 extern volatile float voltage;
 extern volatile int frontEsc;
 extern volatile int backEsc;
@@ -263,6 +296,7 @@ extern volatile int backServoCenterOffset;
 extern volatile double voltageCorrectionFactor;
 extern volatile bool buzzerDisabled;
 extern volatile bool buzzerOff;
+extern volatile bool currentIsArmed;
 extern bool isVoltageAlarmEnabled;
 
 
@@ -271,54 +305,6 @@ enum FlightMode { fmAutoLevel, fmAngleLimit, fmNone };
 extern FlightMode flightMode;
 
 
-class PID {
-    private:
-        double defaultP;
-        double defaultI;
-        double defaultD;
-        double defaultMax;
-        double P;
-        double I;
-        double D;
-        double max;
-        double loopTime;
-        String fname;
-    public:
-        PID() {}
-        PID(double prmP, double prmI, double prmD, double prmMax, double prmLoopTime, String prmFName) : defaultP(prmP), defaultI(prmI), defaultD(prmD), defaultMax(prmMax), P(prmP), I(prmI), D(prmD), max(prmMax), loopTime(prmLoopTime), fname(prmFName) {}
-        void set(String prmP, String prmI, String prmD, String prmMax) { P = prmP.toDouble(); I = prmI.toDouble() ; D = prmD.toDouble(); max = prmMax.toDouble(); }
-        double getP() { return P; }
-        double getI() { return I; }
-        double getD() { return D; }
-        double getMax() { return max; }
-        double getLoopTime() { return loopTime; }
-        void resetToDefault() { P = defaultP; I = defaultI, D = defaultD, max = defaultMax; }
-        void load();
-        void save();
-        void print() { Serial.print(P); Serial.print("\t"); Serial.print(I); Serial.print("\t"); Serial.print(D); Serial.print("\t"); Serial.print(max); Serial.println(); }
-};
-
-class PIDOutput {
-    private:
-        PID *pid;
-        double error;
-        double prevError;
-        double prevI;
-        double P;
-        double I;
-        double D;
-        double output;
-    public:
-        PIDOutput(PID *prmPid) : pid(prmPid), prevError(0.0), prevI(0.0) {}
-        double getError() { return error; }
-        double getPrevError() { return prevError; }
-        double getP() { return P; }
-        double getI() { return I; }
-        double getD() { return D; }
-        double getOutput() { return output; }
-        void calc(double prmGyroAxisInput, double prmSetPoint);
-        void reset() { prevError = 0.0; prevI = 0.0; }
-};
 
 class TwoPosSwitch {
     private:
@@ -326,7 +312,7 @@ class TwoPosSwitch {
     public:
         TwoPosSwitch() {}
         TwoPosSwitch(int prmChannenNr) : channelNr(prmChannenNr)  {}
-        int readPos() { return (channel[channelNr] < MID_CHANNEL) ? 1 : 2; }
+        int readPos() { return (ppm->getValue(channelNr) < MID_CHANNEL) ? 1 : 2; }
 };
 
 class ThreePosSwitch {
@@ -335,17 +321,25 @@ class ThreePosSwitch {
     public:
         ThreePosSwitch() {}
         ThreePosSwitch(int prmChannenNr) : channelNr(prmChannenNr)  {}
-        int readPos() { return (channel[channelNr] < 1250) ? 1 : (channel[channelNr] > 1750) ? 3 : 2; }
+        int readPos() { return (ppm->getValue(channelNr) < 1250) ? 1 : (ppm->getValue(channelNr) > 1750) ? 3 : 2; }
 };
 
 
-extern PID rollPID;
-extern PID pitchPID;
-extern PID yawPID;
+extern PID rollAnglePID;
+extern PID pitchAnglePID;
 
-extern PIDOutput rollOutputPID;
-extern PIDOutput pitchOutputPID;
-extern PIDOutput yawOutputPID;
+extern PIDOutput rollAngleOutputPID;
+extern PIDOutput pitchAngleOutputPID;
+
+
+extern PID rollRatePID;
+extern PID pitchRatePID;
+extern PID yawRatePID;
+
+extern PIDOutput rollRateOutputPID;
+extern PIDOutput pitchRateOutputPID;
+extern PIDOutput yawRateOutputPID;
+
 
 extern TwoPosSwitch switchA;
 extern TwoPosSwitch switchB;
@@ -372,16 +366,15 @@ extern int fixChannelDirection(int prmChannel, boolean prmReversed);
 extern void printSetPoints(double prmRollSetPoint, double prmPitchSetPoint, double prmYawSetPoint);
 extern void printPIDOutputs(double prmOutputRoll, double prmOutputPitch, double prmOutputYaw);
 extern void printMotorOutputs(int prmFrontEsc, int prmBackEsc, int prmFrontServo, int prmBackServo);
-extern double getLoopTimeHz(int prmLoopTime);
-extern void calcLevelAdjust(FlightMode prmFlightMode);
-extern double calcPidSetPoint(int prmChannel, double prmLevelAdjust);
 extern void delayEx(uint32_t prmMilisec);
+extern double getLoopTimeHz(int prmLoopTime);
 extern bool isBootButtonPressed();
 extern bool isBootButtonReleased();
 extern void waitForBootButtonClicked();
 extern void calibrateESCs();
 extern int limitEsc(int prmPulse);
 extern int limitServo(int prmPulse);
+extern bool isArmingSwitchTriggered();
 extern bool isArmed();
 extern bool isArmingAllowed();
 extern void initValues();

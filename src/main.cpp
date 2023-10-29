@@ -42,18 +42,26 @@ void getWebPageHandler() {
 
 void saveHandler() {
   Serial.println("/Save");
-    
-  rollPID.set(server.arg("Roll1"), server.arg("Roll2"), server.arg("Roll3"), server.arg("Roll4"));
-  rollPID.print();
-  rollPID.save();
 
-  pitchPID.set(server.arg("Pitch1"), server.arg("Pitch2"), server.arg("Pitch3"), server.arg("Pitch4"));
-  pitchPID.print();
-  pitchPID.save();
+  rollAnglePID.set(server.arg("RollAngleP"), server.arg("RollAngleI"), server.arg("RollAngleD"), server.arg("RollAngleMax"));
+  rollAnglePID.print();
+  rollAnglePID.save();
 
-  yawPID.set(server.arg("Yaw1"), server.arg("Yaw2"), server.arg("Yaw3"), server.arg("Yaw4"));
-  yawPID.print();    
-  yawPID.save();
+  pitchAnglePID.set(server.arg("PitchAngleP"), server.arg("PitchAngleI"), server.arg("PitchAngleD"), server.arg("PitchAngleMax"));
+  pitchAnglePID.print();
+  pitchAnglePID.save();
+
+  rollRatePID.set(server.arg("RollRateP"), server.arg("RollRateI"), server.arg("RollRateD"), server.arg("RollRateMax"));
+  rollRatePID.print();
+  rollRatePID.save();
+
+  pitchRatePID.set(server.arg("PitchRateP"), server.arg("PitchRateI"), server.arg("PitchRateD"), server.arg("PitchRateMax"));
+  pitchRatePID.print();
+  pitchRatePID.save();
+
+  yawRatePID.set(server.arg("YawRateP"), server.arg("YawRateI"), server.arg("YawRateD"), server.arg("YawRateMax"));
+  yawRatePID.print();    
+  yawRatePID.save();
 
   rollExpoFactor = checkExpo(server.arg(getIdFromName(NAME_ROLL_EXPO)).toDouble());
   pitchExpoFactor = checkExpo(server.arg(getIdFromName(NAME_PITCH_EXPO)).toDouble());
@@ -67,9 +75,9 @@ void saveHandler() {
   printProps();
   saveProps();
 
-  rollOutputPID.reset();
-  pitchOutputPID.reset();
-  yawOutputPID.reset();
+  rollRateOutputPID.reset();
+  pitchRateOutputPID.reset();
+  yawRateOutputPID.reset();
 
   REDIRECT_TO_ROOT;
 }
@@ -109,18 +117,26 @@ void buzzerOnOffHandler() {
 
 void defaultsHandler() {
   Serial.println("/Defaults");
-    
-  rollPID.resetToDefault();
-  rollPID.print();
-  rollPID.save();
 
-  pitchPID.resetToDefault();
-  pitchPID.print();
-  pitchPID.save();
+  rollAnglePID.resetToDefault();
+  rollAnglePID.print();
+  rollAnglePID.save();
 
-  yawPID.resetToDefault();
-  yawPID.print();    
-  yawPID.save();
+  pitchAnglePID.resetToDefault();
+  pitchAnglePID.print();
+  pitchAnglePID.save();
+
+  rollRatePID.resetToDefault();
+  rollRatePID.print();
+  rollRatePID.save();
+
+  pitchRatePID.resetToDefault();
+  pitchRatePID.print();
+  pitchRatePID.save();
+
+  yawRatePID.resetToDefault();
+  yawRatePID.print();    
+  yawRatePID.save();
 
   rollExpoFactor = defaultRollExpoFactor;
   pitchExpoFactor = defaultPitchExpoFactor;
@@ -134,9 +150,9 @@ void defaultsHandler() {
   printProps();
   saveProps();
 
-  rollOutputPID.reset();
-  pitchOutputPID.reset();
-  yawOutputPID.reset();
+  rollRateOutputPID.reset();
+  pitchRateOutputPID.reset();
+  yawRateOutputPID.reset();
 
   activeTab = NAME_TAB_BUTTON_SETTINGS;
   REDIRECT_TO_ROOT;  
@@ -168,9 +184,11 @@ void setup() {
   Serial.println(xPortGetCoreID());
 
   if (SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
-    rollPID.load();
-    pitchPID.load();
-    yawPID.load();
+    rollAnglePID.load();
+    pitchAnglePID.load();
+    rollRatePID.load();
+    pitchRatePID.load();
+    yawRatePID.load();
     loadProps();
   } else {
     Serial.println("SPIFFS Mount Failed");
@@ -252,6 +270,9 @@ void setup() {
     Serial.println();
     Serial.print("IP address: ");
     Serial.println(ip);
+
+    // disable voltage alarm
+    isVoltageAlarmEnabled = false;
   }
 
   voltage = readVoltage();

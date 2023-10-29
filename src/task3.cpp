@@ -8,18 +8,26 @@ MPU6050 mpu6050(angle_90);
 
 
 const double factor = 1.0 / (getLoopTimeHz(LOOP_TIME_TASK3));
-volatile double angle_roll = 0.0;
-volatile double angle_pitch = 0.0;
-volatile double angle_yaw = 0.0;
+volatile double kalmanRollAngle = 0.0;
+volatile double kalmanPitchAngle = 0.0;
+volatile double yawAngle = 0.0;
+
+const double desiredRollAngleFactor = 2*FLIGHT_MODE_MAX_ROLL_ANGLE/(MAX_PULSE-MIN_PULSE);
+const double desiredPitchAngleFactor = 2*FLIGHT_MODE_MAX_PITCH_ANGLE/(MAX_PULSE-MIN_PULSE);
+
+const double desiredRateFactor = 0.15;  // sensitivity
 
 
 // kalman filter: https://github.com/CarbonAeronautics/Part-XV-1DKalmanFilter
-double kalmanAngleRoll = 0.0;
 double kalmanUncertaintyAngleRoll = 2.0*2.0;
-double kalmanAnglePitch = 0.0;
 double kalmanUncertaintyAnglePitch = 2.0*2.0;
 double kalman1DOutput[] = {0.0,0.0};
 
+
+int rollChannel = 0;
+int pitchChannel = 0;
+int throttleChannel = 0;
+int yawChannel = 0;
 
 
 void kalmanOneDimFilter(double prmKalmanState, double prmKalmanUncertainty, double prmKalmanInput, double prmKalmanMeasurement) {
@@ -74,74 +82,67 @@ double complementaryFilter(double prmOldValue, double prmNewValue) {
 }
 
 
+int complementaryFilter(int prmOldValue, int prmNewValue) {
+  return int(round(((double)prmOldValue * 0.9) + ((double)prmNewValue * 0.1)));  
+}
+
+
 void task3_loop() {
   flightMode = getFlightMode();
 
-  int rollChannel =  fixChannelDirection(getExpo(channel[0], rollExpoFactor), rollChannelReversed);
-  int pitchChannel = fixChannelDirection(getExpo(channel[1], pitchExpoFactor), pitchChannelReversed);
-  int throttleChannel = fixChannelDirection(channel[2], throttleChannelReversed);
-  int yawChannel = fixChannelDirection(getExpo(channel[3], yawExpoFactor), yawChannelReversed);
+  rollChannel = complementaryFilter(rollChannel, fixChannelDirection(getExpo(ppm->getValue(ROLL_CHANNEL), rollExpoFactor), rollChannelReversed));
+  pitchChannel = complementaryFilter(pitchChannel, fixChannelDirection(getExpo(ppm->getValue(PITCH_CHANNEL), pitchExpoFactor), pitchChannelReversed));
+  throttleChannel = complementaryFilter(throttleChannel, fixChannelDirection(ppm->getValue(THROTTLE_CHANNEL), throttleChannelReversed));
+  yawChannel = complementaryFilter(yawChannel, fixChannelDirection(getExpo(ppm->getValue(YAW_CHANNEL), yawExpoFactor), yawChannelReversed));
 
   mpu6050.readData();
 
   // calc roll angle
-  kalmanOneDimFilter(kalmanAngleRoll, kalmanUncertaintyAngleRoll, mpu6050.getCalibratedRateRoll(), mpu6050.getAngleRollAcc());
-  kalmanAngleRoll = kalman1DOutput[0]; 
+  kalmanOneDimFilter(kalmanRollAngle, kalmanUncertaintyAngleRoll, mpu6050.getCalibratedRateRoll(), mpu6050.getAngleRollAcc());
+  kalmanRollAngle = kalman1DOutput[0]; 
   kalmanUncertaintyAngleRoll = kalman1DOutput[1];
-  angle_roll = kalmanAngleRoll;
 
   // calc pitch angle
-  kalmanOneDimFilter(kalmanAnglePitch, kalmanUncertaintyAnglePitch, mpu6050.getCalibratedRatePitch(), mpu6050.getAnglePitchAcc());
-  kalmanAnglePitch = kalman1DOutput[0]; 
+  kalmanOneDimFilter(kalmanPitchAngle, kalmanUncertaintyAnglePitch, mpu6050.getCalibratedRatePitch(), mpu6050.getAnglePitchAcc());
+  kalmanPitchAngle = kalman1DOutput[0]; 
   kalmanUncertaintyAnglePitch = kalman1DOutput[1];
-  angle_pitch = kalmanAnglePitch;
 
   // calc yaw angle based on integration; no option to compensate for drift (unless compass sensor is added)
-  angle_yaw += mpu6050.getCalibratedRateYaw() * factor;
+  yawAngle += mpu6050.getCalibratedRateYaw() * factor;
 
   gyro_roll_input = complementaryFilter(gyro_roll_input, mpu6050.getCalibratedRateRoll());
   gyro_pitch_input = complementaryFilter(gyro_pitch_input, mpu6050.getCalibratedRatePitch());
   gyro_yaw_input = complementaryFilter(gyro_yaw_input, mpu6050.getCalibratedRateYaw());
 
-  calcLevelAdjust(flightMode);
+  desiredRollAngle = desiredRollAngleFactor * (rollChannel - MID_CHANNEL);
+  desiredPitchAngle = desiredPitchAngleFactor * (pitchChannel - MID_CHANNEL);
+
+  rollAngleOutputPID.calc(kalmanRollAngle, desiredRollAngle);
+  pitchAngleOutputPID.calc(kalmanPitchAngle, desiredPitchAngle);
+
+  switch (flightMode) {
+    case fmAutoLevel: {
+        desiredRollRate = rollAngleOutputPID.getOutput();
+        desiredPitchRate = pitchAngleOutputPID.getOutput();      
+      } 
+      break;   
+    default: {
+        desiredRollRate = desiredRateFactor * (rollChannel - MID_CHANNEL);    
+        desiredPitchRate = desiredRateFactor * (pitchChannel - MID_CHANNEL);
+      }
+    break;      
+  }
+  desiredYawRate = desiredRateFactor * (yawChannel - MID_CHANNEL);
   
-  pid_roll_setpoint = calcPidSetPoint(rollChannel, roll_level_adjust);
-  pid_pitch_setpoint = calcPidSetPoint(pitchChannel, pitch_level_adjust);
-  pid_yaw_setpoint = 0.0;
-  if (throttleChannel > 1050) pid_yaw_setpoint = calcPidSetPoint(yawChannel, 0.0);
-
-  rollOutputPID.calc(gyro_roll_input, pid_roll_setpoint);
-  pitchOutputPID.calc(gyro_pitch_input, pid_pitch_setpoint);
-  yawOutputPID.calc(gyro_yaw_input, pid_yaw_setpoint);
-
-//  Serial.print(angle_roll);
-//  Serial.print("\t");
-//  Serial.print(gyro_roll_input);
-//  Serial.print("\t");
-//  Serial.print(rollChannel);
-//  Serial.print("\t");
-//  Serial.print(roll_level_adjust);
-//  Serial.print("\t");
-//  Serial.print(pid_roll_setpoint);
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getP());
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getI());
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getD());
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getPrevError());
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getError());
-//  Serial.print("\t");
-//  Serial.print(rollOutputPID.getOutput());
-//  Serial.println();
+  rollRateOutputPID.calc(gyro_roll_input, desiredRollRate);
+  pitchRateOutputPID.calc(gyro_pitch_input, desiredPitchRate);
+  yawRateOutputPID.calc(gyro_yaw_input, desiredYawRate);
 
   if (throttleChannel > MAX_THROTTLE) throttleChannel = MAX_THROTTLE;
-  frontEsc = limitEsc(throttleChannel - pitchOutputPID.getOutput());
-  backEsc = limitEsc(throttleChannel + pitchOutputPID.getOutput());
-  frontServo = limitServo(MID_CHANNEL - rollOutputPID.getOutput() - yawOutputPID.getOutput() + frontServoCenterOffset);
-  backServo = limitServo(MID_CHANNEL + rollOutputPID.getOutput() - yawOutputPID.getOutput() + backServoCenterOffset);
+  frontEsc = limitEsc(throttleChannel + pitchRateOutputPID.getOutput());
+  backEsc = limitEsc(throttleChannel - pitchRateOutputPID.getOutput());
+  frontServo = limitServo(MID_CHANNEL + rollRateOutputPID.getOutput() - yawRateOutputPID.getOutput() + frontServoCenterOffset);
+  backServo = limitServo(MID_CHANNEL - rollRateOutputPID.getOutput() - yawRateOutputPID.getOutput() + backServoCenterOffset);
   
 
   if (signal_detected && isArmed()) {    
@@ -157,6 +158,38 @@ void task3_loop() {
     frontServo = MID_CHANNEL + frontServoCenterOffset;
     backServo = MID_CHANNEL + backServoCenterOffset;
   }
+
+//  Serial.print(kalmanRollAngle);
+//  Serial.print("\t");
+//  Serial.print(gyro_roll_input);
+//  Serial.print("\t");
+//  Serial.print(desiredRollRate);
+//  Serial.print("\t");
+//  Serial.print(rollChannel);
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getP());
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getI());
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getD());
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getPrevError());
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getError());
+//  Serial.print("\t");
+//  Serial.print(rollRateOutputPID.getOutput());
+//  Serial.print("\t");
+//  Serial.print(frontEsc);
+//  Serial.print("\t");
+//  Serial.print(backEsc);
+//  Serial.print("\t");
+//  Serial.print(frontServo);
+//  Serial.print("\t");
+//  Serial.print(backServo);
+//  Serial.print("\t");  
+//  Serial.println();
+
+//ppm->printChannels();
 
   writeEscPWM(MOTOR_FRONT_PWM_CHANNEL, frontEsc);
   writeEscPWM(MOTOR_BACK_PWM_CHANNEL, backEsc);

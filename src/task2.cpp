@@ -1,23 +1,20 @@
 #include <functions.h>
 
+
 volatile unsigned long usedUpLoopTimeTask2;
+volatile bool currentIsArmed = false;
 bool previousIsArmed = false;
+PPMReceiver *ppm;
 
 
 void task2_setup() {
-  pinMode(RECEIVER_PPM_PIN, INPUT_PULLUP);
-
-  // receiver
-  initReceiver();
-  attachInterrupt(RECEIVER_PPM_PIN, ppmInterruptHandler, FALLING);
-  //delay(100);
-  
+  ppm = new PPMReceiver(RECEIVER_PPM_PIN, NR_OF_RECEIVER_CHANNELS);
   usedUpLoopTimeTask2 = 0;
 }
 
 
 void task2_loop() {
-  int throttleSignal = channel[2]; 
+  int throttleSignal = ppm->getValue(THROTTLE_CHANNEL); 
   if (isValidSignal(throttleSignal)) {
     bool is_signal_detected = (throttleSignal > SIGNAL_LOST_PULSE);
     if (is_signal_detected) {
@@ -41,19 +38,19 @@ void task2_loop() {
     }
   } 
 
-  bool actualIsArmed = isArmed();
-  if (actualIsArmed && !previousIsArmed) {
+  bool actualIsArmingSwitchTriggered = isArmingSwitchTriggered();
+  if (actualIsArmingSwitchTriggered && !previousIsArmed) {
     if (isArmingAllowed()) {
       initValues();
       playArmed();
-    } else {
-      actualIsArmed = false;
+      currentIsArmed = true;
     }
-  } else if (!actualIsArmed && previousIsArmed) {
+  } else if (!actualIsArmingSwitchTriggered && previousIsArmed) {
     initValues();
     playDisarmed();
+    currentIsArmed = false;
   }
-  previousIsArmed = actualIsArmed;
+  previousIsArmed = isArmed();
 }
 
 

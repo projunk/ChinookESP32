@@ -5,7 +5,6 @@ volatile int32_t wiFiSignalStrength = MIN_SIGNAL_STRENGTH;
 volatile bool APStarted = false;
 volatile int peakCount;
 volatile unsigned long previousTimerValue;
-volatile int channel[NR_OF_RECEIVER_CHANNELS];
 volatile int frontEsc = 0;
 volatile int backEsc = 0;
 volatile int frontServo = 0;
@@ -23,28 +22,36 @@ volatile int backServoCenterOffset = defaultBackServoCenterOffset;
 volatile double voltageCorrectionFactor = defaultVoltageCorrectionFactor;
 volatile bool buzzerDisabled = false;
 volatile bool buzzerOff = false;
-volatile double roll_level_adjust, pitch_level_adjust, yaw_level_adjust;
 volatile double gyro_roll_input, gyro_pitch_input, gyro_yaw_input;
-volatile double pid_roll_setpoint, pid_pitch_setpoint, pid_yaw_setpoint;
+volatile double desiredRollAngle, desiredPitchAngle;
+volatile double desiredRollRate, desiredPitchRate, desiredYawRate;
 bool isVoltageAlarmEnabled = true;
 
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-TwoPosSwitch switchA(4);
-TwoPosSwitch switchB(6);
-ThreePosSwitch switchC(5);
-TwoPosSwitch switchD(7);
+TwoPosSwitch switchA(SWA_CHANNEL);
+TwoPosSwitch switchB(SWB_CHANNEL);
+ThreePosSwitch switchC(SWC_CHANNEL);
+TwoPosSwitch switchD(SWD_CHANNEL);
 
 FlightMode flightMode;
 
-PID rollPID(0.6, 0.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "roll");
-PID pitchPID(2.0, 0.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "pitch");
-PID yawPID(0.5, 0.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "yaw");
 
-PIDOutput rollOutputPID(&rollPID);
-PIDOutput pitchOutputPID(&pitchPID);
-PIDOutput yawOutputPID(&yawPID);
+PID rollAnglePID(2.0, 0.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "rollAngle");
+PID pitchAnglePID(2.0, 0.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "pitcAngle");
+
+PIDOutput rollAngleOutputPID(&rollAnglePID);
+PIDOutput pitchAngleOutputPID(&pitchAnglePID);
+
+
+PID rollRatePID(0.6, 3.5, 0.03, 400.0, (LOOP_TIME_TASK3/1000000.0), "roll");
+PID pitchRatePID(0.6, 3.5, 0.03, 400.0, (LOOP_TIME_TASK3/1000000.0), "pitch");
+PID yawRatePID(2.0, 12.0, 0.0, 400.0, (LOOP_TIME_TASK3/1000000.0), "yaw");
+
+PIDOutput rollRateOutputPID(&rollRatePID);
+PIDOutput pitchRateOutputPID(&pitchRatePID);
+PIDOutput yawRateOutputPID(&yawRatePID);
 
 
 
@@ -188,30 +195,6 @@ int getExpo(const int prmInPulse, const double prmExpoFactor) {
 }
 
 
-void initReceiver() {
-  peakCount = 0;
-  previousTimerValue = 0;
-  for (int i = 0; i < NR_OF_RECEIVER_CHANNELS; i++) {
-    channel[i] = 0;
-  }
-}
-
-
-void IRAM_ATTR ppmInterruptHandler() {
-  unsigned long actualTimerValue = micros();
-  unsigned long actualTimeBetweenPeaks = actualTimerValue - previousTimerValue;
-  previousTimerValue = actualTimerValue;
-  if (actualTimeBetweenPeaks > PPM_PULSE_TRAIN_PERIOD) {
-    peakCount = 0;
-  } else {
-    if (peakCount < MAX_PEAK_COUNT) {
-      channel[peakCount] = actualTimeBetweenPeaks;
-    }
-    peakCount++;
-  }
-}
-
-
 bool isEqualID(const uint8_t prmID[UniqueIDsize]) {
   for (size_t i = 0; i < UniqueIDsize; i++) {
 			if (UniqueID[i] != prmID[i]) {
@@ -341,72 +324,17 @@ void printMotorOutputs(int prmFrontEsc, int prmBackEsc, int prmFrontServo, int p
 }
 
 
-double getLoopTimeHz(int prmLoopTime) {
-  return 1000000.0 / prmLoopTime;
-}
-
-
-void calcLevelAdjust(FlightMode prmFlightMode) {
-  if (prmFlightMode == fmNone) {
-    roll_level_adjust = 0.0;
-    pitch_level_adjust = 0.0;
-    yaw_level_adjust = 0.0;
-  } else {
-    // Calculate the pitch/roll angle correction
-    pitch_level_adjust = angle_pitch * 15;
-    roll_level_adjust = angle_roll * 15;
-    yaw_level_adjust = 0.0;
-  }
-}
-
-
-double calcPidSetPoint(int prmChannel, double prmLevelAdjust) {
-  double rval = 0.0;
-
-  if (prmChannel > (MID_CHANNEL + DEADBAND_HALF)) {
-    rval = prmChannel - (MID_CHANNEL + DEADBAND_HALF);
-  } else if (prmChannel < (MID_CHANNEL - DEADBAND_HALF)) {
-    rval = prmChannel - (MID_CHANNEL - DEADBAND_HALF);
-  }
-
-  if (abs(prmLevelAdjust) > eps) {
-    //Subtract the angle correction from the standarized receiver input value.
-    rval -= prmLevelAdjust;
-
-    //Divide the setpoint for the PID controller by 3 to get angles in degrees.
-    rval /= 3.0;
-  }
-
-  return rval;
-}
-
-
-void PIDOutput::calc(double prmGyroAxisInput, double prmSetPoint) {
-  output = 0.0;
-  error = prmSetPoint - prmGyroAxisInput;
-
-  P = pid->getP() * error;
-
-  I = prevI + pid->getI() * (error + prevError) * pid->getLoopTime() / 2;
-  if (I > pid->getMax()) I = pid->getMax();
-  else if (I < pid->getMax() * -1) I = pid->getMax() * -1;
-
-  D = pid->getD() * (error - prevError) / pid->getLoopTime();
-  output = P + I + D;
-  if (output > pid->getMax()) output = pid->getMax();
-  else if (output < pid->getMax() * -1) output = pid->getMax() * -1;
-
-  prevError = error;
-  prevI = I;
-}
-
-
 void delayEx(uint32_t prmMilisec) {
   uint32_t timer = millis();
   while(millis() - timer < prmMilisec) {
     rtttl::play();
     vTaskDelay(1);
   }
+}
+
+
+double getLoopTimeHz(int prmLoopTime) {
+  return 1000000.0 / prmLoopTime;
 }
 
 
@@ -506,13 +434,18 @@ extern int limitServo(int prmPulse) {
 }
 
 
-bool isArmed() {
+bool isArmingSwitchTriggered(){
   return (signal_detected && (switchA.readPos() == 2));
 }
 
 
+bool isArmed() {
+  return currentIsArmed;
+}
+
+
 bool isArmingAllowed() {
-  int throttleChannel = fixChannelDirection(channel[2], throttleChannelReversed);
+  int throttleChannel = fixChannelDirection(ppm->getValue(THROTTLE_CHANNEL), throttleChannelReversed);
   return throttleChannel < (MIN_PULSE + DEADBAND_HALF);
 }
 
@@ -522,13 +455,16 @@ void initValues() {
   gyro_pitch_input = 0.0;
   gyro_yaw_input = 0.0;
 
-  angle_roll = mpu6050.getAngleRollAcc();
-  angle_pitch = mpu6050.getAnglePitchAcc();
-  angle_yaw = 0.0;
+  kalmanRollAngle = mpu6050.getAngleRollAcc();
+  kalmanPitchAngle = mpu6050.getAnglePitchAcc();
+  yawAngle = 0.0;
 
-  rollOutputPID.reset();
-  pitchOutputPID.reset();
-  yawOutputPID.reset();
+  rollAngleOutputPID.reset();
+  pitchAngleOutputPID.reset();
+
+  rollRateOutputPID.reset();
+  pitchRateOutputPID.reset();
+  yawRateOutputPID.reset();
 }
 
 
@@ -603,15 +539,6 @@ void playSignalDetected() {
 void playSignalLost() {
   Serial.println("Signal Lost");   
   playTune("SignalLost:d=16,o=5,b=140:a7,P,c5,P,c5,P,c5,P,c5,P,c5,P,c5,P");  
-}
-
-
-void printChannels() {
-  for (int i = 0; i < NR_OF_RECEIVER_CHANNELS; i++) {
-    Serial.print(channel[i]);
-    Serial.print("\t");
-  }
-  Serial.println();
 }
 
 
@@ -747,11 +674,11 @@ String addRow(String prmName, bool prmIsEditableCell, bool prmIsHeader, String p
 }
 
 
-String addRow(String name, bool prmIsHeader, String prmName1, String prmName2, String prmName3, String prmName4, String prmName5, String prmName6, String prmName7, String prmName8, String prmName9, String prmName10) {
+String addRow(String name, bool prmIsHeader, String prmName1, String prmName2, String prmName3, String prmName4, String prmName5, String prmName6, String prmName7, String prmName8, String prmName9) {
   String prefix = prmIsHeader ? "<th " : "<td ";
   String suffix = prmIsHeader ? "</th>" : "</td>";
   String col1 = prefix + "style=\"width:9%\" ALIGN=CENTER>" + name + suffix;
-  String col2, col3, col4, col5, col6, col7, col8, col9, col10, col11;
+  String col2, col3, col4, col5, col6, col7, col8, col9, col10;
   if (prmIsHeader) {
     col2 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName1 + suffix;
     col3 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName2 + suffix;
@@ -762,7 +689,6 @@ String addRow(String name, bool prmIsHeader, String prmName1, String prmName2, S
     col8 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName7 + suffix;  
     col9 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName8 + suffix;  
     col10 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName9 + suffix;  
-    col11 = prefix + " style=\"width:9%\" ALIGN=CENTER>" + prmName10 + suffix;      
   } else {
     col2 = prefix + " id=" + addDQuotes(getIdFromName(prmName1)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
     col3 = prefix + " id=" + addDQuotes(getIdFromName(prmName2)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
@@ -773,9 +699,8 @@ String addRow(String name, bool prmIsHeader, String prmName1, String prmName2, S
     col8 = prefix + " id=" + addDQuotes(getIdFromName(prmName7)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
     col9 = prefix + " id=" + addDQuotes(getIdFromName(prmName8)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
     col10 = prefix + " id=" + addDQuotes(getIdFromName(prmName9)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
-    col11 = prefix + " id=" + addDQuotes(getIdFromName(prmName10)) + " style=\"width:9%\" ALIGN=CENTER>" + suffix;
   }
-  return "<tr>" + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9 + col10 + col11 + "</tr>";
+  return "<tr>" + col1 + col2 + col3 + col4 + col5 + col6 + col7 + col8 + col9 + col10 + "</tr>";
 }
 
 
@@ -1171,38 +1096,61 @@ String getScript(String prmToBeClickedTabButton) {
   s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_3) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_3) + "\"," + String(LOOP_TIME_TASK3) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_3) + ");";
   s += "        updateLoopTime(\"" + getIdFromName(ID_PROGRESS_LOOPTIME_4) + "\"," + "\"" + getIdFromName(ID_SPAN_PROGRESS_LOOPTIME_4) + "\"," + String(LOOP_TIME_TASK4) + "," + "data." + getIdFromName(NAME_USED_UP_LOOPTIME_PROGRESS_4) + ");";
 
+  // roll angle  
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_ROLL_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_ROLL_ACC) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH_ACC) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_YAW_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_YAW_ACC) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_ROLL) + "\").innerText = data." + getIdFromName(NAME_ANGLE_ROLL) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_KALMAN_ROLL_ANGLE_INPUT) + "\").innerText = data." + getIdFromName(NAME_KALMAN_ROLL_ANGLE_INPUT) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_ROLL_ANGLE_DESIRED) + "\").innerText = data." + getIdFromName(NAME_PID_ROLL_ANGLE_DESIRED) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_ERROR) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_P) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_I) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_D) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE) + ";";
+  
+  // pitch angle
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH_ACC) + ";";
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_KALMAN_PITCH_ANGLE_INPUT) + "\").innerText = data." + getIdFromName(NAME_KALMAN_PITCH_ANGLE_INPUT) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_PITCH_ANGLE_DESIRED) + "\").innerText = data." + getIdFromName(NAME_PID_PITCH_ANGLE_DESIRED) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_ERROR) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_P) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_I) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_D) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE) + ";";  
+   
+  // roll rate
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_ROLL_ACC_COPY) + "\").innerText = data." + getIdFromName(NAME_ANGLE_ROLL_ACC) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_ROLL_COPY) + "\").innerText = data." + getIdFromName(NAME_ANGLE_ROLL) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_ROLL_RATE_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_ROLL_RATE_INPUT) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_ROLL_RATE_DESIRED) + "\").innerText = data." + getIdFromName(NAME_PID_ROLL_RATE_DESIRED) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_ERROR) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_P) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_I) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_D) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE) + ";";
+
+  // pitch rate
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH_ACC_COPY) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH_ACC) + ";";
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_PITCH_COPY) + "\").innerText = data." + getIdFromName(NAME_ANGLE_PITCH) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_PITCH_RATE_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_PITCH_RATE_INPUT) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_PITCH_RATE_DESIRED) + "\").innerText = data." + getIdFromName(NAME_PID_PITCH_RATE_DESIRED) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_ERROR) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_P) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_I) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_D) + ";";  
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE) + ";";  
+
+  // yaw rate
+  s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_YAW_ACC) + "\").innerText = data." + getIdFromName(NAME_ANGLE_YAW_ACC) + ";";  
   s += "        document.getElementById(\"" + getIdFromName(NAME_ANGLE_YAW) + "\").innerText = data." + getIdFromName(NAME_ANGLE_YAW) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_ROLL_LEVEL_ADJUST) + "\").innerText = data." + getIdFromName(NAME_ROLL_LEVEL_ADJUST) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PITCH_LEVEL_ADJUST) + "\").innerText = data." + getIdFromName(NAME_PITCH_LEVEL_ADJUST) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_YAW_LEVEL_ADJUST) + "\").innerText = data." + getIdFromName(NAME_YAW_LEVEL_ADJUST) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_ROLL_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_ROLL_INPUT) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_PITCH_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_PITCH_INPUT) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_YAW_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_YAW_INPUT) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_ROLL_SETPOINT) + "\").innerText = data." + getIdFromName(NAME_PID_ROLL_SETPOINT) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_PITCH_SETPOINT) + "\").innerText = data." + getIdFromName(NAME_PID_PITCH_SETPOINT) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_YAW_SETPOINT) + "\").innerText = data." + getIdFromName(NAME_PID_YAW_SETPOINT) + ";"; 
-
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_ERROR) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_ERROR) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_ERROR) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_P) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_P) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_P) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_I) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_I) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_I) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL_D) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH_D) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_D) + ";"; 
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_ROLL) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_ROLL) + ";";
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_PITCH) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_PITCH) + ";";  
-  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW) + ";"; 
-
+  s += "        document.getElementById(\"" + getIdFromName(NAME_GYRO_YAW_RATE_INPUT) + "\").innerText = data." + getIdFromName(NAME_GYRO_YAW_RATE_INPUT) + ";"; 
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_YAW_RATE_DESIRED) + "\").innerText = data." + getIdFromName(NAME_PID_YAW_RATE_DESIRED) + ";"; 
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_ERROR) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_ERROR) + ";"; 
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_P) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_P) + ";"; 
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_I) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_I) + ";"; 
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_D) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_D) + ";";   
+  s += "        document.getElementById(\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE) + "\").innerText = data." + getIdFromName(NAME_PID_OUTPUT_YAW_RATE) + ";"; 
+    
   s += "        document.getElementById(" + addDQuotes(ID_BUZZER_BUTTON) + ").innerText = data." + ID_BUZZER_BUTTON + ";";   
 
   s += "      }";  
@@ -1222,9 +1170,11 @@ String getScript(String prmToBeClickedTabButton) {
   s += "function savePropValues() {";
   s += "  clearInterval(timerId);";
   s += "  var xhr = new XMLHttpRequest();";
-  s += "  var rollValues = getNameValue(\"Roll1\") + \"&\" + getNameValue(\"Roll2\") + \"&\" + getNameValue(\"Roll3\") + \"&\" + getNameValue(\"Roll4\");";
-  s += "  var pitchValues = getNameValue(\"Pitch1\") + \"&\" + getNameValue(\"Pitch2\") + \"&\" + getNameValue(\"Pitch3\") + \"&\" + getNameValue(\"Pitch4\");";
-  s += "  var yawValues = getNameValue(\"Yaw1\") + \"&\" + getNameValue(\"Yaw2\") + \"&\" + getNameValue(\"Yaw3\") + \"&\" + getNameValue(\"Yaw4\");";
+  s += "  var rollAngleValues = getNameValue(\"RollAngleP\") + \"&\" + getNameValue(\"RollAngleI\") + \"&\" + getNameValue(\"RollAngleD\") + \"&\" + getNameValue(\"RollAngleMax\");";
+  s += "  var pitchAngleValues = getNameValue(\"PitchAngleP\") + \"&\" + getNameValue(\"PitchAngleI\") + \"&\" + getNameValue(\"PitchAngleD\") + \"&\" + getNameValue(\"PitchAngleMax\");";
+  s += "  var rollRateValues = getNameValue(\"RollRateP\") + \"&\" + getNameValue(\"RollRateI\") + \"&\" + getNameValue(\"RollRateD\") + \"&\" + getNameValue(\"RollRateMax\");";
+  s += "  var pitchRateValues = getNameValue(\"PitchRateP\") + \"&\" + getNameValue(\"PitchRateI\") + \"&\" + getNameValue(\"PitchRateD\") + \"&\" + getNameValue(\"PitchRateMax\");";
+  s += "  var yawRateValues = getNameValue(\"YawRateP\") + \"&\" + getNameValue(\"YawRateI\") + \"&\" + getNameValue(\"YawRateD\") + \"&\" + getNameValue(\"YawRateMax\");";
   s += "  var rollExpo = getNameValue(\"" + getIdFromName(NAME_ROLL_EXPO) + "\");";
   s += "  var pitchExpo = getNameValue(\"" + getIdFromName(NAME_PITCH_EXPO) + "\");";
   s += "  var yawExpo = getNameValue(\"" + getIdFromName(NAME_YAW_EXPO) + "\");";
@@ -1234,7 +1184,7 @@ String getScript(String prmToBeClickedTabButton) {
   s += "  var calibrated_accX = getNameValue(\"" + getIdFromName(NAME_CALIBRATED_ACCX) + "\");";
   s += "  var calibrated_accY = getNameValue(\"" + getIdFromName(NAME_CALIBRATED_ACCY) + "\");";  
   s += "  var calibrated_accZ = getNameValue(\"" + getIdFromName(NAME_CALIBRATED_ACCZ) + "\");";  
-  s += "  xhr.open(\"GET\", \"/Save?\" + rollValues + \"&\" + pitchValues + \"&\" + yawValues + \"&\" + rollExpo + \"&\" + pitchExpo + \"&\" + yawExpo + \"&\" + frontServoCenterOffset + \"&\" + backServoCenterOffset + \"&\" + voltageCorrectionFactor + \"&\" + calibrated_accX + \"&\" + calibrated_accY + \"&\" + calibrated_accZ, false);";
+  s += "  xhr.open(\"GET\", \"/Save?\" + rollAngleValues + \"&\" + pitchAngleValues + \"&\" + rollRateValues + \"&\" + pitchRateValues + \"&\" + yawRateValues + \"&\" + rollExpo + \"&\" + pitchExpo + \"&\" + yawExpo + \"&\" + frontServoCenterOffset + \"&\" + backServoCenterOffset + \"&\" + voltageCorrectionFactor + \"&\" + calibrated_accX + \"&\" + calibrated_accY + \"&\" + calibrated_accZ, false);";
   s += "  xhr.send();";
   s += "  location.reload();";  
   s += "}";
@@ -1286,6 +1236,7 @@ String getWebPage(String prmToBeClickedTabButton) {
 
   s += "<div class=\"tab\">";
   s += "<button class=\"tablinks\" onclick=\"selectTab(event, '" + getIdFromName(NAME_TAB_TELEMETRY) + "')\" id=\"" + getIdFromName(NAME_TAB_BUTTON_TELEMETRY) + "\">" NAME_TAB_TELEMETRY "</button>";
+  s += "<button class=\"tablinks\" onclick=\"selectTab(event, '" + getIdFromName(NAME_TAB_PID) + "')\" id=\"" + getIdFromName(NAME_TAB_BUTTON_PID) + "\">" NAME_TAB_PID "</button>";
   s += "<button class=\"tablinks\" onclick=\"selectTab(event, '" + getIdFromName(NAME_TAB_SETTINGS) + "')\" id=\"" + getIdFromName(NAME_TAB_BUTTON_SETTINGS) + "\">" NAME_TAB_SETTINGS "</button>";
   s += "</div>";
 
@@ -1330,14 +1281,21 @@ String getWebPage(String prmToBeClickedTabButton) {
   s += addRow(NAME_USED_UP_LOOPTIME_PROGRESS_4, false, false, getLoopTimeProgressStr(ID_PROGRESS_LOOPTIME_4, ID_SPAN_PROGRESS_LOOPTIME_4, LOOP_TIME_TASK4));  
   s += "</table>";
 
+  s += "</div>";
+
+
+  s += "<div id=\"" NAME_TAB_PID "\" class=\"tabcontent\">";
+
   s += "<br>";
   s += "<br>";
 
   s += "<table ALIGN=CENTER style=width:50%>";
-  s += addRow("", true, "Angle Acc", "Angle", "Level Adjust", "Input", "Setpoint", "Error", "P", "I", "D", "Output");
-  s += addRow(NAME_TELEMETRY_ROLL, false, NAME_ANGLE_ROLL_ACC, NAME_ANGLE_ROLL, NAME_ROLL_LEVEL_ADJUST, NAME_GYRO_ROLL_INPUT, NAME_PID_ROLL_SETPOINT, NAME_PID_OUTPUT_ROLL_ERROR, NAME_PID_OUTPUT_ROLL_P, NAME_PID_OUTPUT_ROLL_I, NAME_PID_OUTPUT_ROLL_D, NAME_PID_OUTPUT_ROLL);
-  s += addRow(NAME_TELEMETRY_PITCH, false, NAME_ANGLE_PITCH_ACC, NAME_ANGLE_PITCH, NAME_PITCH_LEVEL_ADJUST, NAME_GYRO_PITCH_INPUT, NAME_PID_PITCH_SETPOINT, NAME_PID_OUTPUT_PITCH_ERROR, NAME_PID_OUTPUT_PITCH_P, NAME_PID_OUTPUT_PITCH_I, NAME_PID_OUTPUT_PITCH_D, NAME_PID_OUTPUT_PITCH);
-  s += addRow(NAME_TELEMETRY_YAW, false, NAME_ANGLE_YAW_ACC, NAME_ANGLE_YAW, NAME_YAW_LEVEL_ADJUST, NAME_GYRO_YAW_INPUT, NAME_PID_YAW_SETPOINT, NAME_PID_OUTPUT_YAW_ERROR, NAME_PID_OUTPUT_YAW_P, NAME_PID_OUTPUT_YAW_I, NAME_PID_OUTPUT_YAW_D, NAME_PID_OUTPUT_YAW);
+  s += addRow("", true, "Angle Acc", "Angle", "Input", "Desired", "Error", "P", "I", "D", "Output");
+  s += addRow(NAME_TELEMETRY_ROLL_ANGLE, false, NAME_ANGLE_ROLL_ACC, NAME_ANGLE_ROLL, NAME_KALMAN_ROLL_ANGLE_INPUT, NAME_PID_ROLL_ANGLE_DESIRED, NAME_PID_OUTPUT_ROLL_ANGLE_ERROR, NAME_PID_OUTPUT_ROLL_ANGLE_P, NAME_PID_OUTPUT_ROLL_ANGLE_I, NAME_PID_OUTPUT_ROLL_ANGLE_D, NAME_PID_OUTPUT_ROLL_ANGLE);
+  s += addRow(NAME_TELEMETRY_PITCH_ANGLE, false, NAME_ANGLE_PITCH_ACC, NAME_ANGLE_PITCH, NAME_KALMAN_PITCH_ANGLE_INPUT, NAME_PID_PITCH_ANGLE_DESIRED, NAME_PID_OUTPUT_PITCH_ANGLE_ERROR, NAME_PID_OUTPUT_PITCH_ANGLE_P, NAME_PID_OUTPUT_PITCH_ANGLE_I, NAME_PID_OUTPUT_PITCH_ANGLE_D, NAME_PID_OUTPUT_PITCH_ANGLE);
+  s += addRow(NAME_TELEMETRY_ROLL_RATE, false, NAME_ANGLE_ROLL_ACC_COPY, NAME_ANGLE_ROLL_COPY, NAME_GYRO_ROLL_RATE_INPUT, NAME_PID_ROLL_RATE_DESIRED, NAME_PID_OUTPUT_ROLL_RATE_ERROR, NAME_PID_OUTPUT_ROLL_RATE_P, NAME_PID_OUTPUT_ROLL_RATE_I, NAME_PID_OUTPUT_ROLL_RATE_D, NAME_PID_OUTPUT_ROLL_RATE);
+  s += addRow(NAME_TELEMETRY_PITCH_RATE, false, NAME_ANGLE_PITCH_ACC_COPY, NAME_ANGLE_PITCH_COPY, NAME_GYRO_PITCH_RATE_INPUT, NAME_PID_PITCH_RATE_DESIRED, NAME_PID_OUTPUT_PITCH_RATE_ERROR, NAME_PID_OUTPUT_PITCH_RATE_P, NAME_PID_OUTPUT_PITCH_RATE_I, NAME_PID_OUTPUT_PITCH_RATE_D, NAME_PID_OUTPUT_PITCH_RATE);
+  s += addRow(NAME_TELEMETRY_YAW_RATE, false, NAME_ANGLE_YAW_ACC, NAME_ANGLE_YAW, NAME_GYRO_YAW_RATE_INPUT, NAME_PID_YAW_RATE_DESIRED, NAME_PID_OUTPUT_YAW_RATE_ERROR, NAME_PID_OUTPUT_YAW_RATE_P, NAME_PID_OUTPUT_YAW_RATE_I, NAME_PID_OUTPUT_YAW_RATE_D, NAME_PID_OUTPUT_YAW_RATE);
   s += "</table>";
 
   s += "</div>";
@@ -1366,9 +1324,11 @@ String getWebPage(String prmToBeClickedTabButton) {
 
   s += "<table ALIGN=CENTER style=width:50%>";
   s += addRow2("PID", "P", "I", "D", "Max", false, true);
-  s += addRow2(NAME_PID_SETTINGS_ROLL, toString(rollPID.getP()), toString(rollPID.getI()), toString(rollPID.getD()), toString(rollPID.getMax()), true, false);
-  s += addRow2(NAME_PID_SETTINGS_PITCH, toString(pitchPID.getP()), toString(pitchPID.getI()), toString(pitchPID.getD()), toString(pitchPID.getMax()), true, false);
-  s += addRow2(NAME_PID_SETTINGS_YAW, toString(yawPID.getP()), toString(yawPID.getI()), toString(yawPID.getD()), toString(yawPID.getMax()), true, false);
+  s += addRow2(NAME_PID_SETTINGS_ROLL_ANGLE, toString(rollAnglePID.getP()), toString(rollAnglePID.getI()), toString(rollAnglePID.getD()), toString(rollAnglePID.getMax()), true, false);
+  s += addRow2(NAME_PID_SETTINGS_PITCH_ANGLE, toString(pitchAnglePID.getP()), toString(pitchAnglePID.getI()), toString(pitchAnglePID.getD()), toString(pitchAnglePID.getMax()), true, false);
+  s += addRow2(NAME_PID_SETTINGS_ROLL_RATE, toString(rollRatePID.getP()), toString(rollRatePID.getI()), toString(rollRatePID.getD()), toString(rollRatePID.getMax()), true, false);
+  s += addRow2(NAME_PID_SETTINGS_PITCH_RATE, toString(pitchRatePID.getP()), toString(pitchRatePID.getI()), toString(pitchRatePID.getD()), toString(pitchRatePID.getMax()), true, false);
+  s += addRow2(NAME_PID_SETTINGS_YAW_RATE, toString(yawRatePID.getP()), toString(yawRatePID.getI()), toString(yawRatePID.getD()), toString(yawRatePID.getMax()), true, false);
   s += "</table>";
 
   s += "<br>";
@@ -1402,14 +1362,14 @@ String getLatestData() {
   data += "\"" + getIdFromName(NAME_SIGNAL_DETECTED) + "\":" + addDQuotes(toString(signal_detected)) + ",";
   data += "\"" + getIdFromName(NAME_ARMED) + "\":" + addDQuotes(toString(isArmed())) + ",";
   data += "\"" + getIdFromName(NAME_FLIGHT_MODE) + "\":" + addDQuotes(getFlightModeSt()) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_1) + "\":" + addDQuotes(toString(channel[0])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_2) + "\":" + addDQuotes(toString(channel[1])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_3) + "\":" + addDQuotes(toString(channel[2])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_4) + "\":" + addDQuotes(toString(channel[3])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_5) + "\":" + addDQuotes(toString(channel[4])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_6) + "\":" + addDQuotes(toString(channel[5])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_7) + "\":" + addDQuotes(toString(channel[6])) + ",";
-  data += "\"" + getIdFromName(NAME_CHANNEL_8) + "\":" + addDQuotes(toString(channel[7])) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_1) + "\":" + addDQuotes(toString((int)ppm->getValue(1))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_2) + "\":" + addDQuotes(toString((int)ppm->getValue(2))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_3) + "\":" + addDQuotes(toString((int)ppm->getValue(3))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_4) + "\":" + addDQuotes(toString((int)ppm->getValue(4))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_5) + "\":" + addDQuotes(toString((int)ppm->getValue(5))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_6) + "\":" + addDQuotes(toString((int)ppm->getValue(6))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_7) + "\":" + addDQuotes(toString((int)ppm->getValue(7))) + ",";
+  data += "\"" + getIdFromName(NAME_CHANNEL_8) + "\":" + addDQuotes(toString((int)ppm->getValue(8))) + ",";
   data += "\"" + getIdFromName(NAME_VOLTAGE) + "\":" + addDQuotes(getVoltageStr()) + ",";  
   data += "\"" + getIdFromName(NAME_FRONT_ESC) + "\":" + addDQuotes(toString(frontEsc)) + ",";  
   data += "\"" + getIdFromName(NAME_BACK_ESC) + "\":" + addDQuotes(toString(backEsc)) + ",";  
@@ -1432,41 +1392,57 @@ String getLatestData() {
   data += "\"" + getIdFromName(NAME_ANGLE_PITCH_ACC) + "\":" + addDQuotes(String(mpu6050.getAnglePitchAcc(), 0)) + ",";
   data += "\"" + getIdFromName(NAME_ANGLE_YAW_ACC) + "\":" + addDQuotes(String(0.0, 0)) + ",";
 
-  data += "\"" + getIdFromName(NAME_ANGLE_ROLL) + "\":" + String(angle_roll, 0) + ",";
-  data += "\"" + getIdFromName(NAME_ANGLE_PITCH) + "\":" + String(angle_pitch, 0) + ",";
-  data += "\"" + getIdFromName(NAME_ANGLE_YAW) + "\":" + String(angle_yaw, 0) + ",";
+  data += "\"" + getIdFromName(NAME_ANGLE_ROLL) + "\":" + String(kalmanRollAngle, 0) + ",";
+  data += "\"" + getIdFromName(NAME_ANGLE_PITCH) + "\":" + String(kalmanPitchAngle, 0) + ",";
+  data += "\"" + getIdFromName(NAME_ANGLE_YAW) + "\":" + String(yawAngle, 0) + ",";
 
-  data += "\"" + getIdFromName(NAME_ROLL_LEVEL_ADJUST) + "\":" + String(roll_level_adjust, 2) + ",";
-  data += "\"" + getIdFromName(NAME_PITCH_LEVEL_ADJUST) + "\":" + String(pitch_level_adjust, 2) + ",";
-  data += "\"" + getIdFromName(NAME_YAW_LEVEL_ADJUST) + "\":" + String(yaw_level_adjust, 2) + ",";
+  data += "\"" + getIdFromName(NAME_KALMAN_ROLL_ANGLE_INPUT) + "\":" + String(kalmanRollAngle, 2) + ",";
+  data += "\"" + getIdFromName(NAME_KALMAN_PITCH_ANGLE_INPUT) + "\":" + String(kalmanPitchAngle, 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_GYRO_ROLL_INPUT) + "\":" + String(gyro_roll_input, 2) + ",";
-  data += "\"" + getIdFromName(NAME_GYRO_PITCH_INPUT) + "\":" + String(gyro_pitch_input, 2) + ",";
-  data += "\"" + getIdFromName(NAME_GYRO_YAW_INPUT) + "\":" + String(gyro_yaw_input, 2) + ",";
+  data += "\"" + getIdFromName(NAME_GYRO_ROLL_RATE_INPUT) + "\":" + String(gyro_roll_input, 2) + ",";
+  data += "\"" + getIdFromName(NAME_GYRO_PITCH_RATE_INPUT) + "\":" + String(gyro_pitch_input, 2) + ",";
+  data += "\"" + getIdFromName(NAME_GYRO_YAW_RATE_INPUT) + "\":" + String(gyro_yaw_input, 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_ROLL_SETPOINT) + "\":" + String(pid_roll_setpoint, 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_PITCH_SETPOINT) + "\":" + String(pid_pitch_setpoint, 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_YAW_SETPOINT) + "\":" + String(pid_yaw_setpoint, 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_ROLL_ANGLE_DESIRED) + "\":" + String(desiredRollAngle, 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_PITCH_ANGLE_DESIRED) + "\":" + String(desiredPitchAngle, 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_ROLL_RATE_DESIRED) + "\":" + String(desiredRollRate, 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_PITCH_RATE_DESIRED) + "\":" + String(desiredPitchRate, 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_YAW_RATE_DESIRED) + "\":" + String(desiredYawRate, 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ERROR) + "\":" + String(rollOutputPID.getError(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ERROR) + "\":" + String(pitchOutputPID.getError(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_ERROR) + "\":" + String(yawOutputPID.getError(), 2)+ ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_ERROR) + "\":" + String(rollAngleOutputPID.getError(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_ERROR) + "\":" + String(pitchAngleOutputPID.getError(), 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_P) + "\":" + String(rollOutputPID.getP(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_P) + "\":" + String(pitchOutputPID.getP(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_P) + "\":" + String(yawOutputPID.getP(), 2)+ ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_P) + "\":" + String(rollAngleOutputPID.getP(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_P) + "\":" + String(pitchAngleOutputPID.getP(), 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_I) + "\":" + String(rollOutputPID.getI(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_I) + "\":" + String(pitchOutputPID.getI(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_I) + "\":" + String(yawOutputPID.getI(), 2)+ ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_I) + "\":" + String(rollAngleOutputPID.getI(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_I) + "\":" + String(pitchAngleOutputPID.getI(), 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_D) + "\":" + String(rollOutputPID.getD(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_D) + "\":" + String(pitchOutputPID.getD(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_D) + "\":" + String(yawOutputPID.getD(), 2)+ ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE_D) + "\":" + String(rollAngleOutputPID.getD(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE_D) + "\":" + String(pitchAngleOutputPID.getD(), 2) + ",";
 
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL) + "\":" + String(rollOutputPID.getOutput(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH) + "\":" + String(pitchOutputPID.getOutput(), 2) + ",";
-  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW) + "\":" + String(yawOutputPID.getOutput(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_ANGLE) + "\":" + String(rollAngleOutputPID.getOutput(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_ANGLE) + "\":" + String(pitchAngleOutputPID.getOutput(), 2) + ",";
+
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_ERROR) + "\":" + String(rollRateOutputPID.getError(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_ERROR) + "\":" + String(pitchRateOutputPID.getError(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_ERROR) + "\":" + String(yawRateOutputPID.getError(), 2)+ ",";
+
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_P) + "\":" + String(rollRateOutputPID.getP(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_P) + "\":" + String(pitchRateOutputPID.getP(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_P) + "\":" + String(yawRateOutputPID.getP(), 2)+ ",";
+
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_I) + "\":" + String(rollRateOutputPID.getI(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_I) + "\":" + String(pitchRateOutputPID.getI(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_I) + "\":" + String(yawRateOutputPID.getI(), 2)+ ",";
+
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE_D) + "\":" + String(rollRateOutputPID.getD(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE_D) + "\":" + String(pitchRateOutputPID.getD(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE_D) + "\":" + String(yawRateOutputPID.getD(), 2)+ ",";
+
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_ROLL_RATE) + "\":" + String(rollRateOutputPID.getOutput(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_PITCH_RATE) + "\":" + String(pitchRateOutputPID.getOutput(), 2) + ",";
+  data += "\"" + getIdFromName(NAME_PID_OUTPUT_YAW_RATE) + "\":" + String(yawRateOutputPID.getOutput(), 2) + ",";
 
   data += addDQuotes(ID_BUZZER_BUTTON) + ":" + addDQuotes(getBuzzerCaption());
 
